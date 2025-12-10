@@ -1,9 +1,9 @@
-// devicemanager.h
 #pragma once
 
 #include <QString>
 #include <QList>
 #include <QVariant>
+#include <utility>  // Для std::pair
 
 struct DeviceInfo {
     QString path;
@@ -24,8 +24,12 @@ Q_DECLARE_METATYPE(DeviceInfo)
 class DeviceManager {
 public:
     static QList<DeviceInfo> scanDevices();
-    static bool unmountAll(const QString& devicePath);
+    static std::pair<bool, QString> unmountAll(const QString& devicePath);
     static QList<QString> getMountPoints(const QString& devicePath);
     static bool isRemovable(const QString& devName);
     static quint64 getDeviceSizeBytes(const QString& devName);
+    static QString getMountInfo(const QString& devicePath);  // Добавлено
+
+private:
+    static std::pair<bool, QString> unmountPoint(const QString& mountPoint);
 };

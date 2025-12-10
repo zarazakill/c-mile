@@ -259,7 +259,10 @@ void MainWindow::updateDevicesUi(const QList<DeviceInfo>& devices) {
 }
 
 void MainWindow::updateDevicesTable(const QList<DeviceInfo>& devices) {
+    // Очищаем таблицу и удаляем старые элементы
+    m_devicesTable->clearContents();
     m_devicesTable->setRowCount(devices.size());
+
     for (int i = 0; i < devices.size(); ++i) {
         const auto& dev = devices[i];
         m_devicesTable->setItem(i, 0, new QTableWidgetItem(dev.path));
@@ -272,7 +275,11 @@ void MainWindow::updateDevicesTable(const QList<DeviceInfo>& devices) {
 
 void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
     m_imageCombo->clear();
+
+    // Очищаем таблицу и удаляем старые элементы
+    m_imagesTable->clearContents();
     m_imagesTable->setRowCount(images.size());
+
     for (int i = 0; i < images.size(); ++i) {
         const auto& img = images[i];
         QString name = QFileInfo(img.path).fileName();
@@ -369,6 +376,15 @@ void MainWindow::onStartWrite() {
         return;
     }
 
+    // Предварительная проверка
+    if (!validateWriteSettings()) {
+        if (!m_forceCheckbox->isChecked()) {
+            logMessage("ERROR", "Проверка не пройдена. Используйте 'Принудительная запись' для продолжения.");
+            return;
+        }
+        logMessage("WARNING", "Предупреждения проигнорированы (принудительная запись)");
+    }
+
     QString msg = QString(
         "<b>ВНИМАНИЕ! Все данные на %1 будут уничтожены!</b><br><br>"
         "Образ: <b>%2</b><br>"
@@ -403,9 +419,23 @@ void MainWindow::onStartWrite() {
 
 void MainWindow::onCancelWrite() {
     if (m_writer) {
-        m_writer->cancel();
         logMessage("WARNING", "Отмена операции...");
         m_cancelBtn->setEnabled(false);
+        m_writer->cancel();
+
+        // Даем время на безопасное завершение
+        if (!m_writer->wait(3000)) { // Ждем до 3 секунд
+            logMessage("ERROR", "Не удалось безопасно завершить операцию");
+            // Принудительное завершение
+            m_writer->terminate();
+            m_writer->wait();
+        }
+
+        m_writer->deleteLater();
+        m_writer = nullptr;
+        m_progressBar->setValue(0);
+        m_progressBar->setVisible(false);
+        m_writeBtn->setEnabled(true);
     }
 }
 
@@ -424,8 +454,31 @@ void MainWindow::onWriteFinished(bool success, const QString& message) {
         logMessage("SUCCESS", message);
         QMessageBox::information(this, "Успех", message);
     } else {
+        // Разделяем сообщение об ошибке на строки для лучшего отображения
+        QString formattedMessage = message;
+        // Заменяем \n на <br> для HTML отображения
+        if (message.contains('\n')) {
+            formattedMessage = message;
+            formattedMessage.replace('\n', "<br>");  // Используем replace на копии
+        }
+
         logMessage("ERROR", message);
-        QMessageBox::critical(this, "Ошибка", message);
+
+        QMessageBox msgBox(this);
+        msgBox.setIcon(QMessageBox::Critical);
+        msgBox.setWindowTitle("Ошибка");
+        msgBox.setText("Произошла ошибка при записи:");
+
+        // Если сообщение длинное, используем подробный текст
+        if (message.length() > 100) {
+            msgBox.setInformativeText(message.left(100) + "...");
+            msgBox.setDetailedText(message);
+        } else {
+            msgBox.setInformativeText(message);
+        }
+
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.exec();
     }
 
     refreshDevices();
@@ -450,26 +503,55 @@ void MainWindow::logMessage(const QString&, const QString& msg) {
 }
 
 bool MainWindow::validateWriteSettings() {
+    bool allChecksPassed = true;
+
     // Проверка размера образа относительно устройства
     if (!Utils::checkImageFitsDevice(m_selectedImage.path, m_selectedDevice.path)) {
         logMessage("ERROR", "Размер образа превышает размер устройства!");
-        return false;
+        allChecksPassed = false;
     }
 
     // Проверка свободного места для временных файлов
     qint64 freeSpace = Utils::getFreeSpace("/tmp");
-    if (freeSpace > 0 && freeSpace < 100 * 1024 * 1024) { // Меньше 100MB
-        logMessage("WARNING", "Мало свободного места в /tmp: " + Utils::formatSize(freeSpace));
+    qint64 imageSize = QFileInfo(m_selectedImage.path).size();
+    if (freeSpace > 0 && freeSpace < imageSize * 2) {
+        logMessage("ERROR",
+                   QString("Недостаточно свободного места в /tmp: %1 (требуется примерно %2)")
+                   .arg(Utils::formatSize(freeSpace))
+                   .arg(Utils::formatSize(imageSize * 2)));
+        allChecksPassed = false;
+    } else if (freeSpace > 0 && freeSpace < imageSize * 3) {
+        logMessage("WARNING",
+                   QString("Мало свободного места в /tmp: %1 (рекомендуется не менее %2)")
+                   .arg(Utils::formatSize(freeSpace))
+                   .arg(Utils::formatSize(imageSize * 3)));
     }
 
     // Проверка целостности архива
     if (Utils::isCompressedArchive(m_selectedImage.path)) {
+        logMessage("INFO", "Проверка целостности архива...");
         if (!Utils::verifyArchiveIntegrity(m_selectedImage.path)) {
-            logMessage("WARNING", "Возможные проблемы с целостностью архива!");
+            logMessage("ERROR", "Образ поврежден!");
+            allChecksPassed = false;
+        } else {
+            logMessage("SUCCESS", "Целостность архива проверена");
         }
     }
 
-    return true;
+    // Проверка доступности файла
+    QFileInfo fi(m_selectedImage.path);
+    if (!fi.exists() || !fi.isReadable()) {
+        logMessage("ERROR", "Файл образа недоступен для чтения!");
+        allChecksPassed = false;
+    }
+
+    // Проверка размера
+    if (fi.size() == 0) {
+        logMessage("ERROR", "Файл образа пустой!");
+        allChecksPassed = false;
+    }
+
+    return allChecksPassed;
 }
 
 void MainWindow::verifyImageBeforeWrite() {
@@ -743,4 +825,16 @@ void MainWindow::onAdvancedSettings() {
     // Реализация расширенных настроек
     QMessageBox::information(this, "Расширенные настройки",
                              "Расширенные настройки будут реализованы в будущих версиях.");
+}
+
+MainWindow::~MainWindow() {
+    if (m_writer) {
+        m_writer->cancel();
+        m_writer->wait();
+        delete m_writer;
+    }
+    if (m_refreshTimer) {
+        m_refreshTimer->stop();
+        delete m_refreshTimer;
+    }
 }

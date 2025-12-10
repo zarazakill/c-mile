@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QString>
 #include <QVariant>
+#include <atomic>
 
 struct ImageInfo {
     QString path;
@@ -41,8 +42,10 @@ protected:
 
 private:
     Config m_cfg;
-    volatile bool m_cancelled = false;
-    static QByteArray computeHash(const QString& path, qint64 maxSize = -1);
+    std::atomic<bool> m_cancelled{false};
+
+    QByteArray computeHash(const QString& path, qint64 maxSize = -1);  // УБРАТЬ static!
     bool writeImage();
     bool verifyImage();
+    void logDeviceStatus(const QString& level, const QString& message);
 };
