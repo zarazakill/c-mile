@@ -55,14 +55,11 @@ private slots:
 private:
     void setupUi();
     void setupWriteTab();
-    void setupDevicesTab();
-    void setupImagesTab();
     void setupConnections();
     void loadSettings();
     void checkReadyState();
 
     void updateDevicesUi(const QList<DeviceInfo>& devices);
-    void updateDevicesTable(const QList<DeviceInfo>& devices);
     void updateImageUi(const QList<ImageInfo>& images);
 
     // Новые функции (можно оставить как приватные, не слоты)
@@ -90,8 +87,6 @@ private:
     QCheckBox* m_verifyCheckbox = nullptr;
     QCheckBox* m_forceCheckbox = nullptr;
 
-    QTableWidget* m_devicesTable = nullptr;
-    QTableWidget* m_imagesTable = nullptr;
     QLineEdit* m_imagesDirEdit = nullptr;
 
     QLabel* m_deviceInfoLabel = nullptr;
