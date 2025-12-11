@@ -29,8 +29,6 @@ m_imageCombo(new QComboBox),
 m_blockSizeCombo(new QComboBox),
 m_verifyCheckbox(new QCheckBox("Проверить запись")),
 m_forceCheckbox(new QCheckBox("Принудительная запись")),
-m_devicesTable(new QTableWidget),
-m_imagesTable(new QTableWidget),
 m_imagesDirEdit(new QLineEdit),
 m_progressBar(new QProgressBar),
 m_logView(new QTextEdit),
@@ -72,8 +70,6 @@ void MainWindow::setupUi() {
     mainLayout->addWidget(m_tabWidget);
 
     setupWriteTab();
-    setupDevicesTab();
-    setupImagesTab();
 
     // Прогресс и лог
     m_progressBar->setVisible(false);
@@ -151,40 +147,9 @@ void MainWindow::setupWriteTab() {
     m_tabWidget->addTab(tab, "Запись");
 }
 
-void MainWindow::setupDevicesTab() {
-    auto tab = new QWidget;
-    auto layout = new QVBoxLayout(tab);
-    m_devicesTable->setColumnCount(5);
-    m_devicesTable->setHorizontalHeaderLabels({"Устройство", "Размер", "Модель", "Тип", "Монтирование"});
-    m_devicesTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    layout->addWidget(m_devicesTable);
-    m_tabWidget->addTab(tab, "Устройства");
-}
 
-void MainWindow::setupImagesTab() {
-    auto tab = new QWidget;
-    auto layout = new QVBoxLayout(tab);
 
-    auto ctrl = new QHBoxLayout;
-    auto browseDirBtn = new QPushButton("Обзор...");
-    auto scanBtn = new QPushButton("Сканировать");
-    connect(browseDirBtn, &QPushButton::clicked, this, &MainWindow::browseImagesDir);
-    connect(scanBtn, &QPushButton::clicked, this, &MainWindow::refreshImages);
-    m_imagesDirEdit->setText(QDir::homePath() + "/Загрузки");
-    ctrl->addWidget(new QLabel("Директория:"));
-    ctrl->addWidget(m_imagesDirEdit, 1);
-    ctrl->addWidget(browseDirBtn);
-    ctrl->addWidget(scanBtn);
-    layout->addLayout(ctrl);
 
-    m_imagesTable->setColumnCount(4);
-    m_imagesTable->setHorizontalHeaderLabels({"Имя файла", "Размер", "Тип", "Путь"});
-    m_imagesTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    connect(m_imagesTable, &QTableWidget::cellDoubleClicked, this, &MainWindow::onImageDoubleClicked);
-    layout->addWidget(m_imagesTable);
-
-    m_tabWidget->addTab(tab, "Образы");
-}
 
 void MainWindow::setupConnections() {
     connect(m_imageCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onImageSelected);
@@ -214,7 +179,7 @@ void MainWindow::refreshDevices() {
 
 void MainWindow::refreshDevicesSilent() {
     auto devs = DeviceManager::scanDevices();
-    updateDevicesTable(devs);
+    updateDevicesUi(devs);
 }
 
 void MainWindow::refreshImages() {
@@ -255,31 +220,6 @@ void MainWindow::updateDevicesUi(const QList<DeviceInfo>& devices) {
     for (const auto& dev : devices) {
         m_deviceCombo->addItem(dev.path + " (" + dev.sizeStr + ")", QVariant::fromValue(dev));
     }
-    updateDevicesTable(devices);
-}
-
-void MainWindow::updateDevicesTable(const QList<DeviceInfo>& devices) {
-    // Явное удаление всех элементов перед очисткой
-    for (int row = m_devicesTable->rowCount() - 1; row >= 0; --row) {
-        for (int col = 0; col < m_devicesTable->columnCount(); ++col) {
-            QTableWidgetItem* item = m_devicesTable->takeItem(row, col);
-            delete item;
-        }
-    }
-
-    // Теперь можно безопасно очистить
-    m_devicesTable->clearContents();
-    m_devicesTable->setRowCount(devices.size());
-
-    for (int i = 0; i < devices.size(); ++i) {
-        const auto& dev = devices[i];
-
-        m_devicesTable->setItem(i, 0, new QTableWidgetItem(dev.path));
-        m_devicesTable->setItem(i, 1, new QTableWidgetItem(dev.sizeStr));
-        m_devicesTable->setItem(i, 2, new QTableWidgetItem(dev.model));
-        m_devicesTable->setItem(i, 3, new QTableWidgetItem(dev.removable ? "USB/SD" : "Внутренний"));
-        m_devicesTable->setItem(i, 4, new QTableWidgetItem(dev.mountPoints.join(", ")));
-    }
 }
 
 void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
@@ -295,18 +235,6 @@ void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
     // Очищаем комбобокс
     m_imageCombo->clear();
 
-    // Явное удаление всех элементов таблицы перед очисткой
-    for (int row = m_imagesTable->rowCount() - 1; row >= 0; --row) {
-        for (int col = 0; col < m_imagesTable->columnCount(); ++col) {
-            QTableWidgetItem* item = m_imagesTable->takeItem(row, col);
-            delete item;
-        }
-    }
-
-    // Теперь можно безопасно очистить
-    m_imagesTable->clearContents();
-    m_imagesTable->setRowCount(images.size());
-
     int selectIndex = -1;
 
     for (int i = 0; i < images.size(); ++i) {
@@ -321,18 +249,11 @@ void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
         if (img.path == currentImage.path) {
             selectIndex = i;
         }
-
-        // Создаем элементы для таблицы
-        m_imagesTable->setItem(i, 0, new QTableWidgetItem(name));
-        m_imagesTable->setItem(i, 1, new QTableWidgetItem(sizeStr));
-        m_imagesTable->setItem(i, 2, new QTableWidgetItem(img.fileType));
-        m_imagesTable->setItem(i, 3, new QTableWidgetItem(img.path));
     }
 
     // Восстанавливаем выбор
     if (selectIndex >= 0) {
         m_imageCombo->setCurrentIndex(selectIndex);
-        m_imagesTable->setCurrentCell(selectIndex, 0);
     } else if (!images.isEmpty()) {
         m_imageCombo->setCurrentIndex(0);
     }
@@ -378,7 +299,6 @@ void MainWindow::onDeviceSelected(int index) {
 void MainWindow::onImageDoubleClicked(int row, int) {
     if (row >= 0 && row < m_images.size()) {
         QString path = m_images[row].path;
-        m_tabWidget->setCurrentIndex(0);
         for (int i = 0; i < m_imageCombo->count(); ++i) {
             if (m_imageCombo->itemData(i).value<ImageInfo>().path == path) {
                 m_imageCombo->setCurrentIndex(i);
@@ -1207,18 +1127,12 @@ void MainWindow::disconnectAllConnections() {
     disconnect(this, nullptr, nullptr, nullptr);
 
     // Отключаем сигналы от виджетов
-    if (m_devicesTable) disconnect(m_devicesTable, nullptr, nullptr, nullptr);
-    if (m_imagesTable) disconnect(m_imagesTable, nullptr, nullptr, nullptr);
     if (m_imageCombo) disconnect(m_imageCombo, nullptr, nullptr, nullptr);
     if (m_deviceCombo) disconnect(m_deviceCombo, nullptr, nullptr, nullptr);
 }
 
 void MainWindow::cleanupUI() {
     qDebug() << "Очистка UI элементов...";
-
-    // Очищаем таблицы
-    clearTable(m_devicesTable, "Таблица устройств");
-    clearTable(m_imagesTable, "Таблица образов");
 
     // Очищаем комбобоксы
     if (m_imageCombo) {
@@ -1320,8 +1234,6 @@ void MainWindow::cleanupResources() {
     m_blockSizeCombo = nullptr;
     m_verifyCheckbox = nullptr;
     m_forceCheckbox = nullptr;
-    m_devicesTable = nullptr;
-    m_imagesTable = nullptr;
     m_imagesDirEdit = nullptr;
     m_deviceInfoLabel = nullptr;
     m_imageInfoLabel = nullptr;
