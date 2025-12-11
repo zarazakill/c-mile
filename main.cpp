@@ -8,12 +8,12 @@
 int main(int argc, char *argv[]) {
     // Создаем QApplication ПЕРВЫМ делом
     QApplication app(argc, argv);
-    app.setApplicationName("Advanced Image Writer");
+    app.setApplicationName("c-mile");
     app.setApplicationVersion("3.0.0");
 
     // Парсер аргументов командной строки
     QCommandLineParser parser;
-    parser.setApplicationDescription("Advanced Image Writer v3.0.0");
+    parser.setApplicationDescription("c-mile v3.0.0");
     parser.addHelpOption();
     parser.addVersionOption();
 
@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    qDebug() << "Запуск Advanced Image Writer v3.0.0";
+    qDebug() << "Запуск c-mile v3.0.0";
 
     try {
         MainWindow mainWindow;

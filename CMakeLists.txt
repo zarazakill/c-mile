@@ -1,6 +1,6 @@
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.16)
-project(AdvancedImageWriter VERSION 3.0.0 LANGUAGES CXX)
+project(cmile VERSION 3.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,16 +26,17 @@ set(HEADERS
     utils.h
 )
 
-add_executable(AdvancedImageWriter ${SOURCES} ${HEADERS})
+add_executable(cmile ${SOURCES} ${HEADERS})
+set_target_properties(cmile PROPERTIES OUTPUT_NAME "c-mile")
 
-target_link_libraries(AdvancedImageWriter
+target_link_libraries(cmile
     Qt6::Core
     Qt6::Widgets
     Qt6::Concurrent
 )
 
 # Убедитесь, что все заголовки видны
-target_include_directories(AdvancedImageWriter PRIVATE .)
+target_include_directories(cmile PRIVATE .)
 
 # Установка правильных путей
-install(TARGETS AdvancedImageWriter DESTINATION bin)
+install(TARGETS cmile DESTINATION bin)
