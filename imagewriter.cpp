@@ -210,7 +210,8 @@ bool ImageWriter::writeImage() {
         }
 
         written += nWritten;
-        int percent = 10 + static_cast<int>((written * 80) / totalSize);
+        double progressRatio = static_cast<double>(written) / totalSize;
+        int percent = 10 + static_cast<int>(progressRatio * 80 + 0.5);
         emit progress(percent, QString("Записано: %1 / %2")
         .arg(Utils::formatSize(written))
         .arg(Utils::formatSize(totalSize)));

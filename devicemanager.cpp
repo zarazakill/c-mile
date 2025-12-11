@@ -75,6 +75,22 @@ QList<QString> DeviceManager::getMountPoints(const QString& devicePath) {
     return mounts;
 }
 
+static bool isValidDevicePath(const QString& path) {
+    // Разрешенные префиксы устройств
+    static const QStringList allowedPrefixes = {
+        "/dev/sd", "/dev/mmcblk", "/dev/nvme"
+    };
+
+    for (const QString& prefix : allowedPrefixes) {
+        if (path.startsWith(prefix)) {
+            // Проверяем, что путь соответствует паттерну устройства
+            QRegularExpression regex("^" + prefix + "[a-z0-9]+$");
+            return regex.match(path).hasMatch();
+        }
+    }
+    return false;
+}
+
 std::pair<bool, QString> DeviceManager::unmountPoint(const QString& mountPoint) {
     QByteArray mpBytes = mountPoint.toLocal8Bit();
 
@@ -177,3 +193,4 @@ std::pair<bool, QString> DeviceManager::unmountAll(const QString& devicePath) {
 
     return {false, errorReport};
 }
+

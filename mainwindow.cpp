@@ -259,12 +259,21 @@ void MainWindow::updateDevicesUi(const QList<DeviceInfo>& devices) {
 }
 
 void MainWindow::updateDevicesTable(const QList<DeviceInfo>& devices) {
-    // Очищаем таблицу и удаляем старые элементы
+    // Явное удаление всех элементов перед очисткой
+    for (int row = m_devicesTable->rowCount() - 1; row >= 0; --row) {
+        for (int col = 0; col < m_devicesTable->columnCount(); ++col) {
+            QTableWidgetItem* item = m_devicesTable->takeItem(row, col);
+            delete item;
+        }
+    }
+
+    // Теперь можно безопасно очистить
     m_devicesTable->clearContents();
     m_devicesTable->setRowCount(devices.size());
 
     for (int i = 0; i < devices.size(); ++i) {
         const auto& dev = devices[i];
+
         m_devicesTable->setItem(i, 0, new QTableWidgetItem(dev.path));
         m_devicesTable->setItem(i, 1, new QTableWidgetItem(dev.sizeStr));
         m_devicesTable->setItem(i, 2, new QTableWidgetItem(dev.model));
@@ -274,24 +283,61 @@ void MainWindow::updateDevicesTable(const QList<DeviceInfo>& devices) {
 }
 
 void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
+    // Сохраняем текущий выбор
+    ImageInfo currentImage;
+    if (m_imageCombo->currentIndex() >= 0) {
+        QVariant var = m_imageCombo->currentData();
+        if (var.isValid()) {
+            currentImage = var.value<ImageInfo>();
+        }
+    }
+
+    // Очищаем комбобокс
     m_imageCombo->clear();
 
-    // Очищаем таблицу и удаляем старые элементы
+    // Явное удаление всех элементов таблицы перед очисткой
+    for (int row = m_imagesTable->rowCount() - 1; row >= 0; --row) {
+        for (int col = 0; col < m_imagesTable->columnCount(); ++col) {
+            QTableWidgetItem* item = m_imagesTable->takeItem(row, col);
+            delete item;
+        }
+    }
+
+    // Теперь можно безопасно очистить
     m_imagesTable->clearContents();
     m_imagesTable->setRowCount(images.size());
+
+    int selectIndex = -1;
 
     for (int i = 0; i < images.size(); ++i) {
         const auto& img = images[i];
         QString name = QFileInfo(img.path).fileName();
         QString sizeStr = Utils::formatSize(img.size);
 
+        // Добавляем в комбобокс
         m_imageCombo->addItem(name + " (" + sizeStr + ")", QVariant::fromValue(img));
 
+        // Находим сохраненный выбор
+        if (img.path == currentImage.path) {
+            selectIndex = i;
+        }
+
+        // Создаем элементы для таблицы
         m_imagesTable->setItem(i, 0, new QTableWidgetItem(name));
         m_imagesTable->setItem(i, 1, new QTableWidgetItem(sizeStr));
         m_imagesTable->setItem(i, 2, new QTableWidgetItem(img.fileType));
         m_imagesTable->setItem(i, 3, new QTableWidgetItem(img.path));
     }
+
+    // Восстанавливаем выбор
+    if (selectIndex >= 0) {
+        m_imageCombo->setCurrentIndex(selectIndex);
+        m_imagesTable->setCurrentCell(selectIndex, 0);
+    } else if (!images.isEmpty()) {
+        m_imageCombo->setCurrentIndex(0);
+    }
+
+    checkReadyState();
 }
 
 void MainWindow::onImageSelected(int index) {
@@ -421,21 +467,23 @@ void MainWindow::onCancelWrite() {
     if (m_writer) {
         logMessage("WARNING", "Отмена операции...");
         m_cancelBtn->setEnabled(false);
+
+        // Безопасная отмена
         m_writer->cancel();
 
+        // Устанавливаем флаг отмены в UI потоке
+        m_cancelled = true;
+
         // Даем время на безопасное завершение
-        if (!m_writer->wait(3000)) { // Ждем до 3 секунд
+        if (!m_writer->wait(3000)) {
             logMessage("ERROR", "Не удалось безопасно завершить операцию");
-            // Принудительное завершение
             m_writer->terminate();
             m_writer->wait();
         }
 
         m_writer->deleteLater();
         m_writer = nullptr;
-        m_progressBar->setValue(0);
-        m_progressBar->setVisible(false);
-        m_writeBtn->setEnabled(true);
+        m_cancelled = false;
     }
 }
 
@@ -445,46 +493,292 @@ void MainWindow::onWriteProgress(int percent, const QString& status) {
 }
 
 void MainWindow::onWriteFinished(bool success, const QString& message) {
-    m_progressBar->setValue(100);
+    // Сохраняем указатель на writer для безопасного удаления
+    ImageWriter* finishedWriter = qobject_cast<ImageWriter*>(sender());
+
+    // Проверяем, что сигнал пришел от текущего writer'а
+    if (finishedWriter && finishedWriter != m_writer) {
+        // Сигнал от старого writer'а, игнорируем
+        finishedWriter->deleteLater();
+        return;
+    }
+
+    // Обновляем UI состояние
+    m_progressBar->setValue(success ? 100 : 0);
     m_writeBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
     m_progressBar->setVisible(false);
 
-    if (success) {
-        logMessage("SUCCESS", message);
-        QMessageBox::information(this, "Успех", message);
-    } else {
-        // Разделяем сообщение об ошибке на строки для лучшего отображения
-        QString formattedMessage = message;
-        // Заменяем \n на <br> для HTML отображения
-        if (message.contains('\n')) {
-            formattedMessage = message;
-            formattedMessage.replace('\n', "<br>");  // Используем replace на копии
-        }
-
-        logMessage("ERROR", message);
-
-        QMessageBox msgBox(this);
-        msgBox.setIcon(QMessageBox::Critical);
-        msgBox.setWindowTitle("Ошибка");
-        msgBox.setText("Произошла ошибка при записи:");
-
-        // Если сообщение длинное, используем подробный текст
-        if (message.length() > 100) {
-            msgBox.setInformativeText(message.left(100) + "...");
-            msgBox.setDetailedText(message);
-        } else {
-            msgBox.setInformativeText(message);
-        }
-
-        msgBox.setStandardButtons(QMessageBox::Ok);
-        msgBox.exec();
-    }
-
-    refreshDevices();
+    // Останавливаем и удаляем writer
     if (m_writer) {
+        // Отключаем все соединения с writer'ом
+        disconnect(m_writer, nullptr, this, nullptr);
+
+        // Ждем безопасного завершения потока
+        if (m_writer->isRunning()) {
+            m_writer->wait(100); // Короткое ожидание для завершения
+        }
+
+        // Удаляем writer
         m_writer->deleteLater();
         m_writer = nullptr;
+    }
+
+    // Обрабатываем результат операции
+    if (success) {
+        handleWriteSuccess(message);
+    } else {
+        handleWriteError(message);
+    }
+
+    // Обновляем список устройств
+    refreshDevices();
+
+    // Дополнительные действия при успешной записи
+    if (success) {
+        // Возможность записать еще один образ
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this,
+            "Операция завершена",
+            "Запись образа успешно завершена!\n\nЗаписать еще один образ?",
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            // Подготовка к новой записи
+            prepareForNewWrite();
+        }
+    }
+}
+
+void MainWindow::handleWriteSuccess(const QString& message) {
+    // Логируем успех
+    logMessage("SUCCESS", message);
+
+    // Показываем информационное сообщение
+    QMessageBox msgBox(this);
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setWindowTitle("Операция завершена успешно");
+    msgBox.setText("Запись образа завершена успешно");
+
+    // Форматируем детальное сообщение
+    QString formattedDetails = formatMessageForDisplay(message);
+    if (!formattedDetails.isEmpty()) {
+        msgBox.setDetailedText(formattedDetails);
+    }
+
+    // Добавляем полезную информацию
+    QString infoText = QString(
+        "Образ: %1\n"
+        "Устройство: %2\n"
+        "Время: %3")
+    .arg(QFileInfo(m_selectedImage.path).fileName())
+    .arg(m_selectedDevice.path)
+    .arg(QDateTime::currentDateTime().toString("dd.MM.yyyy HH:mm:ss"));
+
+    msgBox.setInformativeText(infoText);
+    msgBox.setStandardButtons(QMessageBox::Ok);
+
+    // Настраиваем размер окна
+    msgBox.setMinimumSize(400, 200);
+
+    msgBox.exec();
+
+    // Очищаем выбранные данные
+    clearSelection();
+}
+
+void MainWindow::handleWriteError(const QString& message) {
+    // Логируем ошибку
+    logMessage("ERROR", message);
+
+    // Форматируем сообщение об ошибке
+    QString displayMessage = message;
+    QString detailedMessage = message;
+
+    // Если сообщение содержит переносы строк, форматируем для отображения
+    if (message.contains('\n')) {
+        QStringList lines = message.split('\n', Qt::SkipEmptyParts);
+        if (lines.size() > 1) {
+            // Первая строка - краткое сообщение
+            displayMessage = lines.first();
+
+            // Остальные строки - детали
+            detailedMessage = lines.join("\n");
+        }
+    }
+
+    // Создаем диалог ошибки
+    QMessageBox msgBox(this);
+    msgBox.setIcon(QMessageBox::Critical);
+    msgBox.setWindowTitle("Ошибка записи");
+    msgBox.setText("Произошла ошибка при записи образа");
+
+    // Устанавливаем информативный текст
+    QString informativeText = formatErrorMessage(displayMessage);
+    msgBox.setInformativeText(informativeText);
+
+    // Добавляем детальный текст если нужно
+    if (detailedMessage.length() > 100 || detailedMessage.contains('\n')) {
+        msgBox.setDetailedText(detailedMessage);
+    }
+
+    // Добавляем полезные кнопки
+    msgBox.addButton("Повторить", QMessageBox::AcceptRole);
+    msgBox.addButton(QMessageBox::Ok);
+    msgBox.addButton("Подробности", QMessageBox::HelpRole);
+
+    // Обработка нажатия кнопок
+    int result = msgBox.exec();
+
+    if (msgBox.clickedButton() &&
+        msgBox.clickedButton()->text() == "Повторить") {
+        // Пользователь хочет повторить операцию
+        QTimer::singleShot(100, this, [this]() {
+            onStartWrite();
+        });
+        } else if (msgBox.clickedButton() &&
+            msgBox.clickedButton()->text() == "Подробности") {
+            // Показываем дополнительные детали
+            showErrorDetails(detailedMessage);
+            }
+
+            // Сохраняем лог ошибки
+            saveErrorLog(message);
+}
+
+void MainWindow::prepareForNewWrite() {
+    // Очищаем прогресс
+    m_progressBar->setValue(0);
+
+    // Очищаем лог
+    m_logView->clear();
+
+    // Обновляем списки
+    refreshDevices();
+    refreshImages();
+
+    // Сбрасываем выбор устройства (для безопасности)
+    if (m_deviceCombo->count() > 0) {
+        m_deviceCombo->setCurrentIndex(-1);
+    }
+
+    logMessage("INFO", "Готово к новой операции записи");
+}
+
+void MainWindow::clearSelection() {
+    // Сбрасываем выбранные данные
+    m_selectedImage = ImageInfo();
+    m_selectedDevice = DeviceInfo();
+
+    // Обновляем UI
+    m_imageInfoLabel->setText("Выберите образ");
+    m_deviceInfoLabel->setText("Выберите устройство");
+
+    // Очищаем комбобоксы
+    if (m_imageCombo->count() > 0) {
+        m_imageCombo->setCurrentIndex(-1);
+    }
+    if (m_deviceCombo->count() > 0) {
+        m_deviceCombo->setCurrentIndex(-1);
+    }
+
+    checkReadyState();
+}
+
+QString MainWindow::formatMessageForDisplay(const QString& message) {
+    if (message.isEmpty()) return QString();
+
+    QString formatted = message;
+
+    // Заменяем HTML-теги если они есть
+    formatted.replace("<br>", "\n");
+    formatted.replace("</b>", "");
+    formatted.replace("<b>", "");
+
+    // Ограничиваем длину
+    const int maxLength = 500;
+    if (formatted.length() > maxLength) {
+        formatted = formatted.left(maxLength) + "\n\n... (сообщение обрезано)";
+    }
+
+    return formatted.trimmed();
+}
+
+QString MainWindow::formatErrorMessage(const QString& error) {
+    // Преобразуем системные ошибки в понятные сообщения
+    static const QMap<QString, QString> errorTranslations = {
+        {"Permission denied", "Отказано в доступе. Запустите программу от имени администратора."},
+        {"No space left on device", "Недостаточно места на устройстве."},
+        {"Input/output error", "Ошибка ввода/вывода. Проверьте подключение устройства."},
+        {"Device or resource busy", "Устройство занято другим процессом."},
+        {"No such file or directory", "Файл или устройство не найдено."}
+    };
+
+    QString formatted = error;
+
+    // Ищем известные ошибки
+    for (auto it = errorTranslations.constBegin(); it != errorTranslations.constEnd(); ++it) {
+        if (error.contains(it.key(), Qt::CaseInsensitive)) {
+            formatted = it.value() + "\n\nОригинальное сообщение:\n" + error;
+            break;
+        }
+    }
+
+    return formatted;
+}
+
+void MainWindow::showErrorDetails(const QString& details) {
+    QDialog detailsDialog(this);
+    detailsDialog.setWindowTitle("Детали ошибки");
+    detailsDialog.setMinimumSize(600, 400);
+
+    QVBoxLayout* layout = new QVBoxLayout(&detailsDialog);
+
+    // Текстовое поле с деталями
+    QTextEdit* textEdit = new QTextEdit(&detailsDialog);
+    textEdit->setPlainText(details);
+    textEdit->setReadOnly(true);
+    textEdit->setFont(QFont("Monospace", 9));
+
+    // Кнопки
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* copyButton = new QPushButton("Копировать", &detailsDialog);
+    QPushButton* closeButton = new QPushButton("Закрыть", &detailsDialog);
+
+    connect(copyButton, &QPushButton::clicked, [textEdit]() {
+        QApplication::clipboard()->setText(textEdit->toPlainText());
+    });
+    connect(closeButton, &QPushButton::clicked, &detailsDialog, &QDialog::accept);
+
+    buttonLayout->addWidget(copyButton);
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(closeButton);
+
+    layout->addWidget(new QLabel("Подробная информация об ошибке:"));
+    layout->addWidget(textEdit);
+    layout->addLayout(buttonLayout);
+
+    detailsDialog.exec();
+}
+
+void MainWindow::saveErrorLog(const QString& error) {
+    // Сохраняем лог ошибки в файл
+    QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(logDir);
+
+    QString logFile = logDir + "/error_log.txt";
+    QFile file(logFile);
+
+    if (file.open(QIODevice::Append | QIODevice::Text)) {
+        QTextStream stream(&file);
+        stream << "=== Ошибка записи ===\n";
+        stream << "Время: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
+        stream << "Образ: " << m_selectedImage.path << "\n";
+        stream << "Устройство: " << m_selectedDevice.path << "\n";
+        stream << "Сообщение: " << error << "\n";
+        stream << "=================================\n\n";
+        file.close();
     }
 }
 
@@ -828,13 +1122,214 @@ void MainWindow::onAdvancedSettings() {
 }
 
 MainWindow::~MainWindow() {
-    if (m_writer) {
-        m_writer->cancel();
-        m_writer->wait();
-        delete m_writer;
+    qDebug() << "Начало уничтожения MainWindow...";
+
+    try {
+        // 1. Останавливаем все активные операции
+        stopAllActiveOperations();
+
+        // 2. Отключаем все соединения
+        disconnectAllConnections();
+
+        // 3. Очищаем UI элементы
+        cleanupUI();
+
+        // 4. Очищаем данные
+        cleanupData();
+
+        // 5. Освобождаем ресурсы
+        cleanupResources();
+
+        qDebug() << "MainWindow уничтожен успешно";
     }
-    if (m_refreshTimer) {
+    catch (const std::exception& e) {
+        qCritical() << "Ошибка при уничтожении MainWindow:" << e.what();
+    }
+    catch (...) {
+        qCritical() << "Неизвестная ошибка при уничтожении MainWindow";
+    }
+}
+
+void MainWindow::stopAllActiveOperations() {
+    qDebug() << "Остановка активных операций...";
+
+    // Останавливаем таймер обновления
+    if (m_refreshTimer && m_refreshTimer->isActive()) {
+        qDebug() << "Остановка таймера обновления...";
         m_refreshTimer->stop();
-        delete m_refreshTimer;
     }
+
+    // Останавливаем рабочий поток
+    if (m_writer && m_writer->isRunning()) {
+        qDebug() << "Остановка рабочего потока записи...";
+
+        // Отправляем сигнал отмены
+        emit cancelAllOperations();
+
+        // Устанавливаем флаг отмены в потоке
+        m_writer->cancel();
+
+        // Ждем завершения с таймаутом
+        const int timeoutMs = 5000;
+        if (m_writer->wait(timeoutMs)) {
+            qDebug() << "Рабочий поток завершен корректно";
+        } else {
+            qWarning() << "Рабочий поток не завершился за" << timeoutMs << "мс";
+
+            // Пытаемся принудительно завершить
+            m_writer->terminate();
+
+            if (!m_writer->wait(1000)) {
+                qCritical() << "Не удалось завершить рабочий поток";
+            }
+        }
+    }
+
+    // Останавливаем все фоновые операции QtConcurrent
+    qDebug() << "Ожидание завершения фоновых операций...";
+    QThreadPool::globalInstance()->waitForDone(3000);
+}
+
+void MainWindow::disconnectAllConnections() {
+    qDebug() << "Отключение всех соединений...";
+
+    // Отключаем сигналы от таймера
+    if (m_refreshTimer) {
+        disconnect(m_refreshTimer, nullptr, nullptr, nullptr);
+    }
+
+    // Отключаем сигналы от рабочего потока
+    if (m_writer) {
+        disconnect(m_writer, nullptr, nullptr, nullptr);
+    }
+
+    // Отключаем все сигналы MainWindow
+    disconnect(this, nullptr, nullptr, nullptr);
+
+    // Отключаем сигналы от виджетов
+    if (m_devicesTable) disconnect(m_devicesTable, nullptr, nullptr, nullptr);
+    if (m_imagesTable) disconnect(m_imagesTable, nullptr, nullptr, nullptr);
+    if (m_imageCombo) disconnect(m_imageCombo, nullptr, nullptr, nullptr);
+    if (m_deviceCombo) disconnect(m_deviceCombo, nullptr, nullptr, nullptr);
+}
+
+void MainWindow::cleanupUI() {
+    qDebug() << "Очистка UI элементов...";
+
+    // Очищаем таблицы
+    clearTable(m_devicesTable, "Таблица устройств");
+    clearTable(m_imagesTable, "Таблица образов");
+
+    // Очищаем комбобоксы
+    if (m_imageCombo) {
+        m_imageCombo->clear();
+        m_imageCombo->setEnabled(false);
+    }
+    if (m_deviceCombo) {
+        m_deviceCombo->clear();
+        m_deviceCombo->setEnabled(false);
+    }
+
+    // Очищаем другие виджеты
+    if (m_logView) {
+        m_logView->clear();
+        m_logView->setEnabled(false);
+    }
+    if (m_progressBar) {
+        m_progressBar->setValue(0);
+        m_progressBar->setEnabled(false);
+    }
+
+    // Отключаем кнопки
+    if (m_writeBtn) m_writeBtn->setEnabled(false);
+    if (m_cancelBtn) m_cancelBtn->setEnabled(false);
+    if (m_refreshBtn) m_refreshBtn->setEnabled(false);
+}
+
+void MainWindow::clearTable(QTableWidget* table, const QString& tableName) {
+    if (!table) return;
+
+    qDebug() << "Очистка" << tableName << "...";
+
+    // Сохраняем ссылки на элементы перед удалением
+    QList<QTableWidgetItem*> items;
+    const int rows = table->rowCount();
+    const int cols = table->columnCount();
+
+    // Собираем все элементы
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
+            QTableWidgetItem* item = table->item(row, col);
+            if (item) {
+                items.append(item);
+                table->setItem(row, col, nullptr);
+            }
+        }
+    }
+
+    // Очищаем таблицу
+    table->clear();
+    table->setRowCount(0);
+
+    // Удаляем элементы
+    qDeleteAll(items);
+
+    qDebug() << tableName << "очищена, удалено элементов:" << items.size();
+}
+
+void MainWindow::cleanupData() {
+    qDebug() << "Очистка данных...";
+
+    m_devices.clear();
+    m_images.clear();
+
+    // Сбрасываем выбранные элементы
+    m_selectedDevice = DeviceInfo();
+    m_selectedImage = ImageInfo();
+
+    qDebug() << "Данные очищены";
+}
+
+void MainWindow::cleanupResources() {
+    qDebug() << "Освобождение ресурсов...";
+
+    // Удаляем таймер
+    if (m_refreshTimer) {
+        delete m_refreshTimer;
+        m_refreshTimer = nullptr;
+        qDebug() << "Таймер удален";
+    }
+
+    // Удаляем рабочий поток
+    if (m_writer) {
+        // Проверяем, что поток завершен
+        if (m_writer->isRunning()) {
+            qWarning() << "Попытка удаления работающего потока, ожидание...";
+            m_writer->wait(1000);
+        }
+
+        delete m_writer;
+        m_writer = nullptr;
+        qDebug() << "Рабочий поток удален";
+    }
+
+    // Очищаем указатели (они удаляются автоматически как дети MainWindow)
+    m_tabWidget = nullptr;
+    m_deviceCombo = nullptr;
+    m_imageCombo = nullptr;
+    m_blockSizeCombo = nullptr;
+    m_verifyCheckbox = nullptr;
+    m_forceCheckbox = nullptr;
+    m_devicesTable = nullptr;
+    m_imagesTable = nullptr;
+    m_imagesDirEdit = nullptr;
+    m_deviceInfoLabel = nullptr;
+    m_imageInfoLabel = nullptr;
+    m_progressBar = nullptr;
+    m_logView = nullptr;
+    m_writeBtn = nullptr;
+    m_cancelBtn = nullptr;
+    m_refreshBtn = nullptr;
+
+    qDebug() << "Ресурсы освобождены";
 }

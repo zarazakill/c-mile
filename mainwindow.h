@@ -72,6 +72,15 @@ private:
     void wipeDeviceSecurely();
     void testWriteSpeed();
 
+    void handleWriteSuccess(const QString& message);
+    void handleWriteError(const QString& message);
+    void prepareForNewWrite();
+    void clearSelection();
+    QString formatMessageForDisplay(const QString& message);
+    QString formatErrorMessage(const QString& error);
+    void showErrorDetails(const QString& details);
+    void saveErrorLog(const QString& error);
+
     // UI pointers
     QTabWidget* m_tabWidget = nullptr;
 
