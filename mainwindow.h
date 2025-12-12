@@ -5,16 +5,16 @@
 #include <QComboBox>
 #include <QProgressBar>
 #include <QTextEdit>
-#include <QTableWidget>
 #include <QPushButton>
 #include <QCheckBox>
-#include <QLineEdit>
-#include <QTabWidget>
-#include <QTimer>
 #include <QLabel>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QProgressDialog>
 
 #include "devicemanager.h"
 #include "imagewriter.h"
+#include "formatmanager.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -24,73 +24,47 @@ public:
     ~MainWindow();
 
 private slots:
-    // UI actions
-    void refreshAll();
     void refreshDevices();
-    void refreshDevicesSilent();
-    void refreshImages();
     void browseImage();
-    void browseImagesDir();
     void onStartWrite();
     void onCancelWrite();
-
-    // UI events
     void onImageSelected(int index);
     void onDeviceSelected(int index);
-    void onImageDoubleClicked(int row, int column);
-
-    // Worker events
-    void onWriteProgress(int percent, const QString& status);
+    void onWriteProgress(int percent, const QString& status, double speedMBps, const QString& timeLeft);
     void onWriteFinished(bool success, const QString& message);
-
-    // Logging
     void logMessage(const QString& level, const QString& msg);
 
-    void onVerifyImage();
-    void onCalculateHash();
-    void onWipeDevice();
-    void onTestSpeed();
-    void onAdvancedSettings();
+    void onFormatDevice();
+    void onShowFormatDialog();
+    void onFormatProgress(const QString& message, int percent);
+    void onFormatFinished(bool success, const QString& message);
 
 private:
     void setupUi();
-    void setupWriteTab();
     void setupConnections();
-    void loadSettings();
     void checkReadyState();
-
-    void updateDevicesUi(const QList<DeviceInfo>& devices);
-    void updateImageUi(const QList<ImageInfo>& images);
-
-    // Новые функции (можно оставить как приватные, не слоты)
     bool validateWriteSettings();
-    void verifyImageBeforeWrite();
-    void calculateImageHash();
-    void wipeDeviceSecurely();
-    void testWriteSpeed();
+    qint64 parseBlockSize(const QString& sizeStr);
+    void updateSpeedInfo(double speedMBps, const QString& timeLeft);
 
-    void handleWriteSuccess(const QString& message);
-    void handleWriteError(const QString& message);
-    void prepareForNewWrite();
-    void clearSelection();
-    QString formatMessageForDisplay(const QString& message);
-    QString formatErrorMessage(const QString& error);
-    void showErrorDetails(const QString& details);
-    void saveErrorLog(const QString& error);
+    void showFormatDialog();
+    void formatDeviceIntelligently(const QString& devicePath, qint64 sizeBytes,
+                                   const QString& filesystem = "", int clusterSize = 0,
+                                   const QString& label = "", bool quickFormat = true);
+    void updateFormatProgress(const QString& message, int percent);
 
     // UI pointers
-    QTabWidget* m_tabWidget = nullptr;
-
     QComboBox* m_deviceCombo = nullptr;
     QComboBox* m_imageCombo = nullptr;
     QComboBox* m_blockSizeCombo = nullptr;
+    QComboBox* m_clusterSizeCombo = nullptr;  // Добавили размер кластера
     QCheckBox* m_verifyCheckbox = nullptr;
     QCheckBox* m_forceCheckbox = nullptr;
 
-    QLineEdit* m_imagesDirEdit = nullptr;
-
     QLabel* m_deviceInfoLabel = nullptr;
     QLabel* m_imageInfoLabel = nullptr;
+    QLabel* m_speedLabel = nullptr;      // Для отображения скорости
+    QLabel* m_timeLeftLabel = nullptr;   // Для отображения оставшегося времени
 
     QProgressBar* m_progressBar = nullptr;
     QTextEdit* m_logView = nullptr;
@@ -98,14 +72,25 @@ private:
     QPushButton* m_writeBtn = nullptr;
     QPushButton* m_cancelBtn = nullptr;
     QPushButton* m_refreshBtn = nullptr;
+    QPushButton* m_browseBtn = nullptr;
 
     // State
     QList<DeviceInfo> m_devices;
-    QList<ImageInfo> m_images;
 
     DeviceInfo m_selectedDevice;
     ImageInfo m_selectedImage;
 
     ImageWriter* m_writer = nullptr;
     QTimer* m_refreshTimer = nullptr;
+    QElapsedTimer* m_writeTimer = nullptr;
+
+    bool m_cancelled = false;
+    qint64 m_totalImageSize = 0;
+    QString m_lastProgressMessage;
+
+    QPushButton* m_formatBtn = nullptr;
+    FormatManager* m_formatManager = nullptr;
+    QProgressDialog* m_formatProgressDialog = nullptr;
+    QString m_currentFormatDevice;
+
 };

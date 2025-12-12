@@ -8,12 +8,12 @@
 int main(int argc, char *argv[]) {
     // Создаем QApplication ПЕРВЫМ делом
     QApplication app(argc, argv);
-    app.setApplicationName("c-mile");
-    app.setApplicationVersion("3.0.0");
+    app.setApplicationName("C-mile");
+    app.setApplicationVersion("0.9.5");
 
     // Парсер аргументов командной строки
     QCommandLineParser parser;
-    parser.setApplicationDescription("c-mile v3.0.0");
+    parser.setApplicationDescription("C-mile v0.9.5");
     parser.addHelpOption();
     parser.addVersionOption();
 
@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    qDebug() << "Запуск c-mile v3.0.0";
+    qDebug() << "Запуск C-mile v0.9.5";
 
     try {
         MainWindow mainWindow;

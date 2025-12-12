@@ -28,13 +28,15 @@ public:
         QString devicePath;
         bool verify = false;
         bool force = false;
+        qint64 blockSize = 64 * 1024 * 1024;  // 64MB по умолчанию
+        qint64 clusterSize = 32 * 1024;       // 32KB по умолчанию
     };
 
     explicit ImageWriter(const Config& cfg, QObject* parent = nullptr);
     void cancel();
 
 signals:
-    void progress(int percent, const QString& status);
+    void progress(int percent, const QString& status, double speedMBps, const QString& timeLeft);
     void finished(bool success, const QString& message);
 
 protected:
@@ -44,7 +46,7 @@ private:
     Config m_cfg;
     std::atomic<bool> m_cancelled{false};
 
-    QByteArray computeHash(const QString& path, qint64 maxSize = -1);  // УБРАТЬ static!
+    QByteArray computeHash(const QString& path, qint64 maxSize = -1);
     bool writeImage();
     bool verifyImage();
     void logDeviceStatus(const QString& level, const QString& message);

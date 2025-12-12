@@ -2,6 +2,7 @@
 #include "mainwindow.h"
 #include "devicemanager.h"
 #include "imagewriter.h"
+#include "formatmanager.h"
 #include "utils.h"
 #include <QApplication>
 #include <QVBoxLayout>
@@ -11,44 +12,46 @@
 #include <QLineEdit>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QHeaderView>
-#include <QTimer>
-#include <QDateTime>
 #include <QDebug>
 #include <QProgressDialog>
-#include <QtConcurrent/QtConcurrent>  // Изменено здесь
+#include <QtConcurrent/QtConcurrent>
 #include <QElapsedTimer>
-#include <QFuture>  // для QFuture
-#include <fcntl.h>         // для open, O_WRONLY, O_SYNC
-#include <unistd.h>        // для close, write, fsync
+#include <QClipboard>
+#include <QDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
 
 MainWindow::MainWindow(QWidget *parent)
-: QMainWindow(parent),
-m_deviceCombo(new QComboBox),
-m_imageCombo(new QComboBox),
-m_blockSizeCombo(new QComboBox),
-m_verifyCheckbox(new QCheckBox("Проверить запись")),
-m_forceCheckbox(new QCheckBox("Принудительная запись")),
-m_imagesDirEdit(new QLineEdit),
-m_progressBar(new QProgressBar),
-m_logView(new QTextEdit),
-m_writeBtn(new QPushButton("Записать образ")),
-m_cancelBtn(new QPushButton("Отмена")),
-m_refreshBtn(new QPushButton("Обновить"))
+    : QMainWindow(parent),
+      m_deviceCombo(new QComboBox),
+      m_imageCombo(new QComboBox),
+      m_blockSizeCombo(new QComboBox),
+      m_clusterSizeCombo(new QComboBox),
+      m_verifyCheckbox(new QCheckBox("Проверить запись")),
+      m_forceCheckbox(new QCheckBox("Принудительная запись")),
+      m_progressBar(new QProgressBar),
+      m_logView(new QTextEdit),
+      m_writeBtn(new QPushButton("Записать образ")),
+      m_cancelBtn(new QPushButton("Отмена")),
+      m_refreshBtn(new QPushButton("Обновить")),
+      m_browseBtn(new QPushButton("Обзор...")),
+      m_formatBtn(new QPushButton("Форматировать")),
+      m_writeTimer(new QElapsedTimer),
+      m_speedLabel(new QLabel),
+      m_timeLeftLabel(new QLabel),
+      m_formatManager(&FormatManager::instance())
 {
-    setWindowTitle("Advanced Image Writer v3.0.0");
-    resize(1000, 700);
-
+    setWindowTitle("C-mile v0.9.5");
+    resize(450, 700);  // Увеличили размер для новых элементов
+    
     setupUi();
     setupConnections();
-    loadSettings();
-
+    
     refreshDevices();
-    refreshImages();
-
+    
     // Автообновление устройств каждые 5 сек
     m_refreshTimer = new QTimer(this);
-    connect(m_refreshTimer, &QTimer::timeout, this, &MainWindow::refreshDevicesSilent);
+    connect(m_refreshTimer, &QTimer::timeout, this, &MainWindow::refreshDevices);
     m_refreshTimer->start(5000);
 }
 
@@ -56,256 +59,296 @@ void MainWindow::setupUi() {
     auto central = new QWidget(this);
     setCentralWidget(central);
     auto mainLayout = new QVBoxLayout(central);
-
+    
     // Заголовок
-    auto title = new QLabel("Advanced Image Writer v3.0.0");
+    auto title = new QLabel("C-mile v0.9.5");
     title->setAlignment(Qt::AlignCenter);
     QFont f;
     f.setPointSize(16); f.setBold(true);
     title->setFont(f);
     mainLayout->addWidget(title);
-
-    // Вкладки
-    m_tabWidget = new QTabWidget;
-    mainLayout->addWidget(m_tabWidget);
-
-    setupWriteTab();
-
-    // Прогресс и лог
+    
+    // Группа выбора образа
+    auto imgGroup = new QGroupBox("Выбор образа");
+    auto imgLay = new QVBoxLayout;
+    auto imgTop = new QHBoxLayout;
+    
+    imgTop->addWidget(new QLabel("Образ:"));
+    imgTop->addWidget(m_imageCombo, 1);
+    imgTop->addWidget(m_browseBtn);
+    
+    m_imageInfoLabel = new QLabel("Выберите файл образа (IMG, ISO, GZ, XZ, BZ2, ZIP, etc.)");
+    m_imageInfoLabel->setWordWrap(true);
+    m_imageInfoLabel->setStyleSheet("color: gray;");
+    
+    imgLay->addLayout(imgTop);
+    imgLay->addWidget(m_imageInfoLabel);
+    imgGroup->setLayout(imgLay);
+    
+    // Группа выбора устройства
+    auto devGroup = new QGroupBox("Выбор устройства");
+    auto devLay = new QVBoxLayout;
+    auto devTop = new QHBoxLayout;
+    auto devButtons = new QHBoxLayout;
+    
+    devTop->addWidget(new QLabel("Устройство:"));
+    devTop->addWidget(m_deviceCombo, 1);
+    
+    // Кнопки для устройства
+    devButtons->addWidget(m_refreshBtn);
+    devButtons->addWidget(m_formatBtn);
+    devButtons->addStretch();
+    
+    m_deviceInfoLabel = new QLabel("Выберите устройство");
+    m_deviceInfoLabel->setWordWrap(true);
+    m_deviceInfoLabel->setStyleSheet("color: gray;");
+    
+    devLay->addLayout(devTop);
+    devLay->addLayout(devButtons);
+    devLay->addWidget(m_deviceInfoLabel);
+    devGroup->setLayout(devLay);
+    
+    // Группа настроек
+    auto settingsGroup = new QGroupBox("Настройки записи");
+    auto settingsLay = new QVBoxLayout;
+    
+    // Строка с выбором размера буфера (блока)
+    auto blockSizeLayout = new QHBoxLayout;
+    blockSizeLayout->addWidget(new QLabel("Размер буфера:"));
+    
+    // Добавляем варианты размеров буферов (оптимальные для записи)
+    m_blockSizeCombo->addItems({
+        "64 KB", "128 KB", "256 KB", "512 KB", 
+        "1 MB", "2 MB", "4 MB", "8 MB",
+        "16 MB", "32 MB", "64 MB", "128 MB", "256 MB"
+    });
+    m_blockSizeCombo->setCurrentText("64 MB");  // Оптимальный для USB 3.0
+    
+    blockSizeLayout->addWidget(m_blockSizeCombo);
+    blockSizeLayout->addStretch();
+    
+    // Строка с выбором размера кластера (если форматируем)
+    auto clusterSizeLayout = new QHBoxLayout;
+    clusterSizeLayout->addWidget(new QLabel("Размер кластера (для форматирования):"));
+    
+    m_clusterSizeCombo->addItems({
+        "4 KB", "8 KB", "16 KB", "32 KB", "64 KB", "128 KB",
+        "256 KB", "512 KB", "1 MB", "2 MB"
+    });
+    m_clusterSizeCombo->setCurrentText("32 KB");  // Оптимальный для USB
+    m_clusterSizeCombo->setToolTip("Размер кластера для файловой системы (если будете форматировать после записи)");
+    
+    clusterSizeLayout->addWidget(m_clusterSizeCombo);
+    clusterSizeLayout->addStretch();
+    
+    m_verifyCheckbox->setChecked(true);
+    
+    settingsLay->addLayout(blockSizeLayout);
+    settingsLay->addLayout(clusterSizeLayout);
+    settingsLay->addWidget(m_verifyCheckbox);
+    settingsLay->addWidget(m_forceCheckbox);
+    settingsGroup->setLayout(settingsLay);
+    
+    // Добавляем группы в основной layout
+    mainLayout->addWidget(imgGroup);
+    mainLayout->addWidget(devGroup);
+    mainLayout->addWidget(settingsGroup);
+    
+    // Прогресс
     m_progressBar->setVisible(false);
     m_progressBar->setTextVisible(true);
-    m_logView->setReadOnly(true);
-    m_logView->setMaximumHeight(120);
-
+    m_progressBar->setFormat("%p%");
     mainLayout->addWidget(m_progressBar);
+    
+    // Информация о скорости и времени
+    auto infoLayout = new QHBoxLayout;
+    m_speedLabel->setText("Скорость: -");
+    m_timeLeftLabel->setText("Осталось: -");
+    m_speedLabel->setStyleSheet("font-weight: bold; color: #0066cc;");
+    m_timeLeftLabel->setStyleSheet("font-weight: bold; color: #cc6600;");
+    infoLayout->addWidget(m_speedLabel);
+    infoLayout->addStretch();
+    infoLayout->addWidget(m_timeLeftLabel);
+    mainLayout->addLayout(infoLayout);
+    
+    // Лог
+    m_logView->setReadOnly(true);
+    m_logView->setMaximumHeight(150);
+    m_logView->setFont(QFont("Monospace", 9));
+    mainLayout->addWidget(new QLabel("Лог:"));
     mainLayout->addWidget(m_logView);
-
+    
     // Кнопки
     auto btnLayout = new QHBoxLayout;
     btnLayout->addWidget(m_writeBtn);
     btnLayout->addWidget(m_cancelBtn);
     btnLayout->addStretch();
     btnLayout->addWidget(m_refreshBtn);
-
+    
     mainLayout->addLayout(btnLayout);
+    
+    // Начальное состояние
+    m_cancelBtn->setEnabled(false);
+    m_speedLabel->setVisible(false);
+    m_timeLeftLabel->setVisible(false);
 }
-
-void MainWindow::setupWriteTab() {
-    auto tab = new QWidget;
-    auto layout = new QVBoxLayout(tab);
-
-    // Образ
-    auto imgGroup = new QGroupBox("Выбор образа");
-    auto imgLay = new QVBoxLayout;
-    auto imgTop = new QHBoxLayout;
-    auto browseImgBtn = new QPushButton("Обзор...");
-    connect(browseImgBtn, &QPushButton::clicked, this, &MainWindow::browseImage);
-    imgTop->addWidget(new QLabel("Образ:"));
-    imgTop->addWidget(m_imageCombo, 1);
-    imgTop->addWidget(browseImgBtn);
-    m_imageInfoLabel = new QLabel("Выберите образ");
-    m_imageInfoLabel->setWordWrap(true);
-    imgLay->addLayout(imgTop);
-    imgLay->addWidget(m_imageInfoLabel);
-    imgGroup->setLayout(imgLay);
-
-    // Устройство
-    auto devGroup = new QGroupBox("Выбор устройства");
-    auto devLay = new QVBoxLayout;
-    auto devTop = new QHBoxLayout;
-    auto refreshDevBtn = new QPushButton("Обновить список");
-    connect(refreshDevBtn, &QPushButton::clicked, this, &MainWindow::refreshDevices);
-    devTop->addWidget(new QLabel("Устройство:"));
-    devTop->addWidget(m_deviceCombo, 1);
-    devTop->addWidget(refreshDevBtn);
-    m_deviceInfoLabel = new QLabel("Выберите устройство");
-    m_deviceInfoLabel->setWordWrap(true);
-    devLay->addLayout(devTop);
-    devLay->addWidget(m_deviceInfoLabel);
-    devGroup->setLayout(devLay);
-
-    // Настройки
-    auto settingsGroup = new QGroupBox("Настройки записи");
-    auto settingsLay = new QVBoxLayout;
-    auto blockLay = new QHBoxLayout;
-    blockLay->addWidget(new QLabel("Размер блока:"));
-    m_blockSizeCombo->addItems({"512", "1K", "2K", "4K", "8K", "16K", "32K", "64K", "128K", "256K", "512K", "1M", "2M", "4M", "8M", "16M"});
-    m_blockSizeCombo->setCurrentText("4M");
-    blockLay->addWidget(m_blockSizeCombo);
-    blockLay->addStretch();
-    m_verifyCheckbox->setChecked(true);
-    settingsLay->addLayout(blockLay);
-    settingsLay->addWidget(m_verifyCheckbox);
-    settingsLay->addWidget(m_forceCheckbox);
-    settingsGroup->setLayout(settingsLay);
-
-    layout->addWidget(imgGroup);
-    layout->addWidget(devGroup);
-    layout->addWidget(settingsGroup);
-    layout->addStretch();
-
-    m_tabWidget->addTab(tab, "Запись");
-}
-
-
-
-
 
 void MainWindow::setupConnections() {
     connect(m_imageCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onImageSelected);
     connect(m_deviceCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onDeviceSelected);
     connect(m_writeBtn, &QPushButton::clicked, this, &MainWindow::onStartWrite);
     connect(m_cancelBtn, &QPushButton::clicked, this, &MainWindow::onCancelWrite);
-    connect(m_refreshBtn, &QPushButton::clicked, this, &MainWindow::refreshAll);
-}
-
-void MainWindow::loadSettings() {
-    m_cancelBtn->setEnabled(false);
-}
-
-// === Слоты ===
-
-void MainWindow::refreshAll() {
-    refreshDevices();
-    refreshImages();
+    connect(m_refreshBtn, &QPushButton::clicked, this, &MainWindow::refreshDevices);
+    connect(m_browseBtn, &QPushButton::clicked, this, &MainWindow::browseImage);
+    connect(m_formatBtn, &QPushButton::clicked, this, &MainWindow::onShowFormatDialog);
 }
 
 void MainWindow::refreshDevices() {
-    logMessage("INFO", "Сканирование устройств...");
-    m_devices = DeviceManager::scanDevices();
-    updateDevicesUi(m_devices);
-    logMessage("SUCCESS", QString("Найдено устройств: %1").arg(m_devices.size()));
-}
-
-void MainWindow::refreshDevicesSilent() {
-    auto devs = DeviceManager::scanDevices();
-    updateDevicesUi(devs);
-}
-
-void MainWindow::refreshImages() {
-    QString dir = m_imagesDirEdit->text();
-    logMessage("INFO", "Сканирование образов в " + dir);
-    m_images.clear();
-
-    QDir d(dir);
-    if (!d.exists()) {
-        logMessage("ERROR", "Директория не найдена: " + dir);
+    // Получаем список устройств
+    auto newDevices = DeviceManager::scanDevices();
+    
+    // Если список не изменился, не обновляем UI
+    if (m_devices == newDevices) {
         return;
     }
-
-    QStringList filters;
-    filters << "*.img" << "*.iso" << "*.gz" << "*.xz" << "*.bz2"
-    << "*.zip" << "*.raw" << "*.dd" << "*.bin" << "*.7z"
-    << "*.tar.gz" << "*.tar.xz" << "*.tar.bz2";
-
-    for (const QString& filter : filters) {
-        QFileInfoList files = d.entryInfoList({filter}, QDir::Files | QDir::Readable);
-        for (const QFileInfo& fi : files) {
-            if (fi.isFile()) {
-                ImageInfo img;
-                img.path = fi.absoluteFilePath();
-                img.size = fi.size();
-                img.fileType = Utils::detectFileType(img.path);
-                m_images.append(img);
-            }
-        }
-    }
-
-    updateImageUi(m_images);
-    logMessage("SUCCESS", QString("Найдено образов: %1").arg(m_images.size()));
-}
-
-void MainWindow::updateDevicesUi(const QList<DeviceInfo>& devices) {
-    m_deviceCombo->clear();
-    for (const auto& dev : devices) {
-        m_deviceCombo->addItem(dev.path + " (" + dev.sizeStr + ")", QVariant::fromValue(dev));
-    }
-}
-
-void MainWindow::updateImageUi(const QList<ImageInfo>& images) {
+    
+    m_devices = newDevices;
+    
     // Сохраняем текущий выбор
-    ImageInfo currentImage;
-    if (m_imageCombo->currentIndex() >= 0) {
-        QVariant var = m_imageCombo->currentData();
+    QString currentDevicePath;
+    if (m_deviceCombo->currentIndex() >= 0) {
+        QVariant var = m_deviceCombo->currentData();
         if (var.isValid()) {
-            currentImage = var.value<ImageInfo>();
+            DeviceInfo currentDevice = var.value<DeviceInfo>();
+            currentDevicePath = currentDevice.path;
         }
     }
-
-    // Очищаем комбобокс
-    m_imageCombo->clear();
-
+    
+    m_deviceCombo->clear();
+    
     int selectIndex = -1;
-
-    for (int i = 0; i < images.size(); ++i) {
-        const auto& img = images[i];
-        QString name = QFileInfo(img.path).fileName();
-        QString sizeStr = Utils::formatSize(img.size);
-
-        // Добавляем в комбобокс
-        m_imageCombo->addItem(name + " (" + sizeStr + ")", QVariant::fromValue(img));
-
-        // Находим сохраненный выбор
-        if (img.path == currentImage.path) {
+    for (int i = 0; i < m_devices.size(); ++i) {
+        const auto& dev = m_devices[i];
+        
+        // Получаем информацию о файловой системе
+        QString fsType = Utils::getFilesystemType(dev.path);
+        
+        QString displayText;
+        if (fsType != "unknown" && fsType != "empty") {
+            displayText = QString("%1 (%2, %3)").arg(dev.path).arg(dev.sizeStr).arg(fsType);
+        } else {
+            displayText = dev.path + " (" + dev.sizeStr + ")";
+        }
+        
+        m_deviceCombo->addItem(displayText, QVariant::fromValue(dev));
+        
+        if (dev.path == currentDevicePath) {
             selectIndex = i;
         }
     }
-
-    // Восстанавливаем выбор
+    
     if (selectIndex >= 0) {
-        m_imageCombo->setCurrentIndex(selectIndex);
-    } else if (!images.isEmpty()) {
+        m_deviceCombo->setCurrentIndex(selectIndex);
+    } else if (!m_devices.isEmpty()) {
+        m_deviceCombo->setCurrentIndex(0);
+    }
+    
+    logMessage("INFO", QString("Найдено устройств: %1").arg(m_devices.size()));
+}
+
+void MainWindow::browseImage() {
+    QString path = QFileDialog::getOpenFileName(this, 
+        "Выберите образ", 
+        QDir::homePath() + "/Загрузки",
+        "Все поддерживаемые образы (*.img *.iso *.gz *.xz *.bz2 *.zip *.raw *.dd *.bin *.7z *.tar.gz *.tar.xz *.tar.bz2);;"
+        "Все файлы (*)");
+    
+    if (!path.isEmpty()) {
+        // Проверяем, есть ли уже этот образ в списке
+        for (int i = 0; i < m_imageCombo->count(); ++i) {
+            if (m_imageCombo->itemData(i).value<ImageInfo>().path == path) {
+                m_imageCombo->setCurrentIndex(i);
+                return;
+            }
+        }
+        
+        // Добавляем новый образ
+        ImageInfo img;
+        img.path = path;
+        img.size = QFileInfo(path).size();
+        img.fileType = Utils::detectFileType(path);
+        
+        QString displayName = QFileInfo(path).fileName() + " (" + Utils::formatSize(img.size) + ")";
+        m_imageCombo->insertItem(0, displayName, QVariant::fromValue(img));
         m_imageCombo->setCurrentIndex(0);
     }
+}
 
-    checkReadyState();
+qint64 MainWindow::parseBlockSize(const QString& sizeStr) {
+    QStringList parts = sizeStr.split(' ');
+    if (parts.size() != 2) return 64 * 1024 * 1024;  // 64MB по умолчанию
+    
+    qint64 size = parts[0].toLongLong();
+    QString unit = parts[1].toUpper();
+    
+    if (unit == "KB") return size * 1024;
+    if (unit == "MB") return size * 1024 * 1024;
+    if (unit == "GB") return size * 1024 * 1024 * 1024;
+    
+    return size;  // Байты по умолчанию
 }
 
 void MainWindow::onImageSelected(int index) {
-    if (index < 0) return;
+    if (index < 0) {
+        m_selectedImage = ImageInfo();
+        m_imageInfoLabel->setText("Выберите файл образа");
+        checkReadyState();
+        return;
+    }
+    
     QVariant var = m_imageCombo->itemData(index);
     if (!var.isValid()) return;
+    
     m_selectedImage = var.value<ImageInfo>();
-
+    
     QString name = QFileInfo(m_selectedImage.path).fileName();
     m_imageInfoLabel->setText(
-        QString("<b>%1</b><br>Размер: %2<br>Тип: %3<br>Путь: %4")
+        QString("<b>%1</b><br>Размер: %2<br>Тип: %3")
         .arg(name)
         .arg(Utils::formatSize(m_selectedImage.size))
         .arg(m_selectedImage.fileType)
-        .arg(m_selectedImage.path)
     );
     checkReadyState();
 }
 
 void MainWindow::onDeviceSelected(int index) {
-    if (index < 0) return;
+    if (index < 0) {
+        m_selectedDevice = DeviceInfo();
+        m_deviceInfoLabel->setText("Выберите устройство");
+        checkReadyState();
+        return;
+    }
+    
     QVariant var = m_deviceCombo->itemData(index);
     if (!var.isValid()) return;
+    
     m_selectedDevice = var.value<DeviceInfo>();
-
-    QString mounts = m_selectedDevice.mountPoints.isEmpty() ? "Нет" : m_selectedDevice.mountPoints.join(", ");
+    
+    // Получаем информацию о файловой системе
+    QString fsType = Utils::getFilesystemType(m_selectedDevice.path);
+    QString mounts = m_selectedDevice.mountPoints.isEmpty() ? 
+        "Не смонтировано" : 
+        "Смонтировано: " + m_selectedDevice.mountPoints.join(", ");
+    
     m_deviceInfoLabel->setText(
-        QString("<b>%1</b><br>Размер: %2<br>Модель: %3<br>Точки монтирования: %4<br>Съёмное: %5")
+        QString("<b>%1</b><br>Размер: %2<br>Модель: %3<br>Файловая система: %4<br>%5")
         .arg(m_selectedDevice.path)
         .arg(m_selectedDevice.sizeStr)
         .arg(m_selectedDevice.model)
+        .arg(fsType)
         .arg(mounts)
-        .arg(m_selectedDevice.removable ? "Да" : "Нет")
     );
     checkReadyState();
-}
-
-void MainWindow::onImageDoubleClicked(int row, int) {
-    if (row >= 0 && row < m_images.size()) {
-        QString path = m_images[row].path;
-        for (int i = 0; i < m_imageCombo->count(); ++i) {
-            if (m_imageCombo->itemData(i).value<ImageInfo>().path == path) {
-                m_imageCombo->setCurrentIndex(i);
-                break;
-            }
-        }
-    }
 }
 
 void MainWindow::checkReadyState() {
@@ -313,27 +356,9 @@ void MainWindow::checkReadyState() {
     m_writeBtn->setEnabled(ready);
 }
 
-void MainWindow::browseImage() {
-    QString path = QFileDialog::getOpenFileName(this, "Выберите образ", m_imagesDirEdit->text(),
-                                                "Образы дисков (*.img *.iso *.gz *.xz *.bz2 *.zip *.raw *.dd *.bin *.7z *.tar.gz *.tar.xz *.tar.bz2);;Все файлы (*)");
-    if (!path.isEmpty()) {
-        ImageInfo img;
-        img.path = path;
-        img.size = QFileInfo(path).size();
-        img.fileType = Utils::detectFileType(path);
-
-        m_imageCombo->insertItem(0, QFileInfo(path).fileName() + " (" + Utils::formatSize(img.size) + ")", QVariant::fromValue(img));
-        m_imageCombo->setCurrentIndex(0);
-        refreshImages();
-    }
-}
-
-void MainWindow::browseImagesDir() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Выберите директорию", m_imagesDirEdit->text());
-    if (!dir.isEmpty()) {
-        m_imagesDirEdit->setText(dir);
-        refreshImages();
-    }
+void MainWindow::updateSpeedInfo(double speedMBps, const QString& timeLeft) {
+    m_speedLabel->setText(QString("Скорость: %1 МБ/с").arg(speedMBps, 0, 'f', 1));
+    m_timeLeftLabel->setText(QString("Осталось: %1").arg(timeLeft));
 }
 
 void MainWindow::onStartWrite() {
@@ -354,10 +379,12 @@ void MainWindow::onStartWrite() {
     QString msg = QString(
         "<b>ВНИМАНИЕ! Все данные на %1 будут уничтожены!</b><br><br>"
         "Образ: <b>%2</b><br>"
-        "Устройство: <b>%1</b><br><br>"
+        "Устройство: <b>%1</b><br>"
+        "Размер буфера: <b>%3</b><br><br>"
         "Продолжить?")
     .arg(m_selectedDevice.path)
-    .arg(QFileInfo(m_selectedImage.path).fileName());
+    .arg(QFileInfo(m_selectedImage.path).fileName())
+    .arg(m_blockSizeCombo->currentText());
 
     if (QMessageBox::question(this, "Подтверждение", msg, QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
         logMessage("INFO", "Операция отменена");
@@ -368,880 +395,590 @@ void MainWindow::onStartWrite() {
     m_cancelBtn->setEnabled(true);
     m_progressBar->setVisible(true);
     m_progressBar->setValue(0);
+    
+    // Показываем информацию о скорости
+    m_speedLabel->setVisible(true);
+    m_timeLeftLabel->setVisible(true);
+    m_speedLabel->setText("Скорость: -");
+    m_timeLeftLabel->setText("Осталось: -");
 
     ImageWriter::Config cfg;
     cfg.imagePath = m_selectedImage.path;
     cfg.devicePath = m_selectedDevice.path;
     cfg.verify = m_verifyCheckbox->isChecked();
     cfg.force = m_forceCheckbox->isChecked();
+    cfg.blockSize = parseBlockSize(m_blockSizeCombo->currentText());
+    cfg.clusterSize = parseBlockSize(m_clusterSizeCombo->currentText());
+
+    // Сохраняем размер образа для расчета скорости
+    m_totalImageSize = QFileInfo(m_selectedImage.path).size();
+    m_writeTimer->restart();
 
     m_writer = new ImageWriter(cfg, this);
     connect(m_writer, &ImageWriter::progress, this, &MainWindow::onWriteProgress);
     connect(m_writer, &ImageWriter::finished, this, &MainWindow::onWriteFinished);
     m_writer->start();
 
-    logMessage("INFO", "Начало записи образа...");
+    logMessage("INFO", QString("Начало записи образа: %1 на %2")
+        .arg(QFileInfo(m_selectedImage.path).fileName())
+        .arg(m_selectedDevice.path));
 }
 
 void MainWindow::onCancelWrite() {
     if (m_writer) {
         logMessage("WARNING", "Отмена операции...");
         m_cancelBtn->setEnabled(false);
-
-        // Безопасная отмена
-        m_writer->cancel();
-
-        // Устанавливаем флаг отмены в UI потоке
         m_cancelled = true;
-
-        // Даем время на безопасное завершение
+        
+        m_writer->cancel();
+        
         if (!m_writer->wait(3000)) {
             logMessage("ERROR", "Не удалось безопасно завершить операцию");
             m_writer->terminate();
             m_writer->wait();
         }
-
+        
         m_writer->deleteLater();
         m_writer = nullptr;
         m_cancelled = false;
+        m_writeBtn->setEnabled(true);
+        m_progressBar->setVisible(false);
+        m_progressBar->setValue(0);
+        m_speedLabel->setVisible(false);
+        m_timeLeftLabel->setVisible(false);
     }
 }
 
-void MainWindow::onWriteProgress(int percent, const QString& status) {
+void MainWindow::onWriteProgress(int percent, const QString& status, double speedMBps, const QString& timeLeft) {
     m_progressBar->setValue(percent);
-    logMessage("PROGRESS", status);
+    
+    // Обновляем информацию о скорости и времени
+    updateSpeedInfo(speedMBps, timeLeft);
+    
+    // Обновляем текст прогресс-бара
+    m_progressBar->setFormat(QString("%1%").arg(percent));
+    
+    // Логируем сообщение только если оно новое
+    if (status != m_lastProgressMessage) {
+        logMessage("PROGRESS", status);
+        m_lastProgressMessage = status;
+    }
 }
 
 void MainWindow::onWriteFinished(bool success, const QString& message) {
-    // Сохраняем указатель на writer для безопасного удаления
     ImageWriter* finishedWriter = qobject_cast<ImageWriter*>(sender());
-
-    // Проверяем, что сигнал пришел от текущего writer'а
+    
     if (finishedWriter && finishedWriter != m_writer) {
-        // Сигнал от старого writer'а, игнорируем
         finishedWriter->deleteLater();
         return;
     }
-
-    // Обновляем UI состояние
+    
     m_progressBar->setValue(success ? 100 : 0);
     m_writeBtn->setEnabled(true);
     m_cancelBtn->setEnabled(false);
-    m_progressBar->setVisible(false);
-
-    // Останавливаем и удаляем writer
+    
     if (m_writer) {
-        // Отключаем все соединения с writer'ом
         disconnect(m_writer, nullptr, this, nullptr);
-
-        // Ждем безопасного завершения потока
+        
         if (m_writer->isRunning()) {
-            m_writer->wait(100); // Короткое ожидание для завершения
+            m_writer->wait(100);
         }
-
-        // Удаляем writer
+        
         m_writer->deleteLater();
         m_writer = nullptr;
     }
-
-    // Обрабатываем результат операции
+    
     if (success) {
-        handleWriteSuccess(message);
-    } else {
-        handleWriteError(message);
-    }
-
-    // Обновляем список устройств
-    refreshDevices();
-
-    // Дополнительные действия при успешной записи
-    if (success) {
-        // Возможность записать еще один образ
-        QMessageBox::StandardButton reply = QMessageBox::question(
-            this,
-            "Операция завершена",
-            "Запись образа успешно завершена!\n\nЗаписать еще один образ?",
-            QMessageBox::Yes | QMessageBox::No
-        );
-
-        if (reply == QMessageBox::Yes) {
-            // Подготовка к новой записи
-            prepareForNewWrite();
+        logMessage("SUCCESS", message);
+        
+        // Рассчитываем общее время записи
+        qint64 elapsed = m_writeTimer->elapsed();
+        QString timeStr;
+        if (elapsed < 1000) {
+            timeStr = QString("%1 мс").arg(elapsed);
+        } else if (elapsed < 60000) {
+            timeStr = QString("%1 сек").arg(elapsed / 1000.0, 0, 'f', 1);
+        } else {
+            int minutes = elapsed / 60000;
+            int seconds = (elapsed % 60000) / 1000;
+            timeStr = QString("%1 мин %2 сек").arg(minutes).arg(seconds);
         }
-    }
-}
-
-void MainWindow::handleWriteSuccess(const QString& message) {
-    // Логируем успех
-    logMessage("SUCCESS", message);
-
-    // Показываем информационное сообщение
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Information);
-    msgBox.setWindowTitle("Операция завершена успешно");
-    msgBox.setText("Запись образа завершена успешно");
-
-    // Форматируем детальное сообщение
-    QString formattedDetails = formatMessageForDisplay(message);
-    if (!formattedDetails.isEmpty()) {
-        msgBox.setDetailedText(formattedDetails);
-    }
-
-    // Добавляем полезную информацию
-    QString infoText = QString(
-        "Образ: %1\n"
-        "Устройство: %2\n"
-        "Время: %3")
-    .arg(QFileInfo(m_selectedImage.path).fileName())
-    .arg(m_selectedDevice.path)
-    .arg(QDateTime::currentDateTime().toString("dd.MM.yyyy HH:mm:ss"));
-
-    msgBox.setInformativeText(infoText);
-    msgBox.setStandardButtons(QMessageBox::Ok);
-
-    // Настраиваем размер окна
-    msgBox.setMinimumSize(400, 200);
-
-    msgBox.exec();
-
-    // Очищаем выбранные данные
-    clearSelection();
-}
-
-void MainWindow::handleWriteError(const QString& message) {
-    // Логируем ошибку
-    logMessage("ERROR", message);
-
-    // Форматируем сообщение об ошибке
-    QString displayMessage = message;
-    QString detailedMessage = message;
-
-    // Если сообщение содержит переносы строк, форматируем для отображения
-    if (message.contains('\n')) {
-        QStringList lines = message.split('\n', Qt::SkipEmptyParts);
-        if (lines.size() > 1) {
-            // Первая строка - краткое сообщение
-            displayMessage = lines.first();
-
-            // Остальные строки - детали
-            detailedMessage = lines.join("\n");
-        }
-    }
-
-    // Создаем диалог ошибки
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Critical);
-    msgBox.setWindowTitle("Ошибка записи");
-    msgBox.setText("Произошла ошибка при записи образа");
-
-    // Устанавливаем информативный текст
-    QString informativeText = formatErrorMessage(displayMessage);
-    msgBox.setInformativeText(informativeText);
-
-    // Добавляем детальный текст если нужно
-    if (detailedMessage.length() > 100 || detailedMessage.contains('\n')) {
-        msgBox.setDetailedText(detailedMessage);
-    }
-
-    // Добавляем полезные кнопки
-    msgBox.addButton("Повторить", QMessageBox::AcceptRole);
-    msgBox.addButton(QMessageBox::Ok);
-    msgBox.addButton("Подробности", QMessageBox::HelpRole);
-
-    // Обработка нажатия кнопок
-    int result = msgBox.exec();
-
-    if (msgBox.clickedButton() &&
-        msgBox.clickedButton()->text() == "Повторить") {
-        // Пользователь хочет повторить операцию
-        QTimer::singleShot(100, this, [this]() {
-            onStartWrite();
+        
+        double speedMBps = (m_totalImageSize / 1024.0 / 1024.0) / (elapsed / 1000.0);
+        
+        // Обновляем финальную скорость
+        m_speedLabel->setText(QString("Средняя скорость: %1 МБ/с").arg(speedMBps, 0, 'f', 1));
+        m_timeLeftLabel->setText(QString("Время записи: %1").arg(timeStr));
+        
+        QMessageBox::information(this, "Успех", 
+            QString("Запись образа успешно завершена!\n\n"
+                   "Образ: %1\n"
+                   "Устройство: %2\n"
+                   "Время: %3\n"
+                   "Средняя скорость: %4 МБ/с")
+            .arg(QFileInfo(m_selectedImage.path).fileName())
+            .arg(m_selectedDevice.path)
+            .arg(timeStr)
+            .arg(speedMBps, 0, 'f', 1));
+        
+        // Сбрасываем выбранное устройство (для безопасности)
+        m_deviceCombo->setCurrentIndex(-1);
+        m_selectedDevice = DeviceInfo();
+        m_deviceInfoLabel->setText("Выберите устройство");
+        
+        // Через 3 секунды скрываем информацию о скорости
+        QTimer::singleShot(3000, this, [this]() {
+            m_speedLabel->setVisible(false);
+            m_timeLeftLabel->setVisible(false);
         });
-        } else if (msgBox.clickedButton() &&
-            msgBox.clickedButton()->text() == "Подробности") {
-            // Показываем дополнительные детали
-            showErrorDetails(detailedMessage);
-            }
-
-            // Сохраняем лог ошибки
-            saveErrorLog(message);
-}
-
-void MainWindow::prepareForNewWrite() {
-    // Очищаем прогресс
-    m_progressBar->setValue(0);
-
-    // Очищаем лог
-    m_logView->clear();
-
-    // Обновляем списки
+    } else {
+        logMessage("ERROR", message);
+        QMessageBox::critical(this, "Ошибка", 
+            "Ошибка при записи образа:\n" + message);
+        
+        // Сразу скрываем информацию о скорости
+        m_speedLabel->setVisible(false);
+        m_timeLeftLabel->setVisible(false);
+    }
+    
     refreshDevices();
-    refreshImages();
-
-    // Сбрасываем выбор устройства (для безопасности)
-    if (m_deviceCombo->count() > 0) {
-        m_deviceCombo->setCurrentIndex(-1);
-    }
-
-    logMessage("INFO", "Готово к новой операции записи");
-}
-
-void MainWindow::clearSelection() {
-    // Сбрасываем выбранные данные
-    m_selectedImage = ImageInfo();
-    m_selectedDevice = DeviceInfo();
-
-    // Обновляем UI
-    m_imageInfoLabel->setText("Выберите образ");
-    m_deviceInfoLabel->setText("Выберите устройство");
-
-    // Очищаем комбобоксы
-    if (m_imageCombo->count() > 0) {
-        m_imageCombo->setCurrentIndex(-1);
-    }
-    if (m_deviceCombo->count() > 0) {
-        m_deviceCombo->setCurrentIndex(-1);
-    }
-
-    checkReadyState();
-}
-
-QString MainWindow::formatMessageForDisplay(const QString& message) {
-    if (message.isEmpty()) return QString();
-
-    QString formatted = message;
-
-    // Заменяем HTML-теги если они есть
-    formatted.replace("<br>", "\n");
-    formatted.replace("</b>", "");
-    formatted.replace("<b>", "");
-
-    // Ограничиваем длину
-    const int maxLength = 500;
-    if (formatted.length() > maxLength) {
-        formatted = formatted.left(maxLength) + "\n\n... (сообщение обрезано)";
-    }
-
-    return formatted.trimmed();
-}
-
-QString MainWindow::formatErrorMessage(const QString& error) {
-    // Преобразуем системные ошибки в понятные сообщения
-    static const QMap<QString, QString> errorTranslations = {
-        {"Permission denied", "Отказано в доступе. Запустите программу от имени администратора."},
-        {"No space left on device", "Недостаточно места на устройстве."},
-        {"Input/output error", "Ошибка ввода/вывода. Проверьте подключение устройства."},
-        {"Device or resource busy", "Устройство занято другим процессом."},
-        {"No such file or directory", "Файл или устройство не найдено."}
-    };
-
-    QString formatted = error;
-
-    // Ищем известные ошибки
-    for (auto it = errorTranslations.constBegin(); it != errorTranslations.constEnd(); ++it) {
-        if (error.contains(it.key(), Qt::CaseInsensitive)) {
-            formatted = it.value() + "\n\nОригинальное сообщение:\n" + error;
-            break;
-        }
-    }
-
-    return formatted;
-}
-
-void MainWindow::showErrorDetails(const QString& details) {
-    QDialog detailsDialog(this);
-    detailsDialog.setWindowTitle("Детали ошибки");
-    detailsDialog.setMinimumSize(600, 400);
-
-    QVBoxLayout* layout = new QVBoxLayout(&detailsDialog);
-
-    // Текстовое поле с деталями
-    QTextEdit* textEdit = new QTextEdit(&detailsDialog);
-    textEdit->setPlainText(details);
-    textEdit->setReadOnly(true);
-    textEdit->setFont(QFont("Monospace", 9));
-
-    // Кнопки
-    QHBoxLayout* buttonLayout = new QHBoxLayout();
-    QPushButton* copyButton = new QPushButton("Копировать", &detailsDialog);
-    QPushButton* closeButton = new QPushButton("Закрыть", &detailsDialog);
-
-    connect(copyButton, &QPushButton::clicked, [textEdit]() {
-        QApplication::clipboard()->setText(textEdit->toPlainText());
-    });
-    connect(closeButton, &QPushButton::clicked, &detailsDialog, &QDialog::accept);
-
-    buttonLayout->addWidget(copyButton);
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(closeButton);
-
-    layout->addWidget(new QLabel("Подробная информация об ошибке:"));
-    layout->addWidget(textEdit);
-    layout->addLayout(buttonLayout);
-
-    detailsDialog.exec();
-}
-
-void MainWindow::saveErrorLog(const QString& error) {
-    // Сохраняем лог ошибки в файл
-    QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(logDir);
-
-    QString logFile = logDir + "/error_log.txt";
-    QFile file(logFile);
-
-    if (file.open(QIODevice::Append | QIODevice::Text)) {
-        QTextStream stream(&file);
-        stream << "=== Ошибка записи ===\n";
-        stream << "Время: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
-        stream << "Образ: " << m_selectedImage.path << "\n";
-        stream << "Устройство: " << m_selectedDevice.path << "\n";
-        stream << "Сообщение: " << error << "\n";
-        stream << "=================================\n\n";
-        file.close();
-    }
-}
-
-void MainWindow::logMessage(const QString&, const QString& msg) {
-    QString time = QDateTime::currentDateTime().toString("HH:mm:ss");
-    QString color;
-    if (msg.contains("ERROR", Qt::CaseSensitive)) color = "#ff4444";
-    else if (msg.contains("SUCCESS", Qt::CaseSensitive)) color = "#44ff44";
-    else if (msg.contains("WARNING", Qt::CaseSensitive)) color = "#ffaa44";
-    else if (msg.contains("PROGRESS", Qt::CaseSensitive)) color = "#ff88ff";
-    else color = "#4488ff";
-
-    m_logView->append(QString("<font color=\"%1\">[%2] %3</font>").arg(color).arg(time).arg(msg));
-    m_logView->moveCursor(QTextCursor::End);
-    qInfo().noquote() << QString("[%1] %2").arg(time).arg(msg);
+    m_progressBar->setVisible(false);
+    m_lastProgressMessage.clear();
 }
 
 bool MainWindow::validateWriteSettings() {
-    bool allChecksPassed = true;
-
     // Проверка размера образа относительно устройства
     if (!Utils::checkImageFitsDevice(m_selectedImage.path, m_selectedDevice.path)) {
         logMessage("ERROR", "Размер образа превышает размер устройства!");
-        allChecksPassed = false;
+        return false;
     }
-
-    // Проверка свободного места для временных файлов
-    qint64 freeSpace = Utils::getFreeSpace("/tmp");
-    qint64 imageSize = QFileInfo(m_selectedImage.path).size();
-    if (freeSpace > 0 && freeSpace < imageSize * 2) {
-        logMessage("ERROR",
-                   QString("Недостаточно свободного места в /tmp: %1 (требуется примерно %2)")
-                   .arg(Utils::formatSize(freeSpace))
-                   .arg(Utils::formatSize(imageSize * 2)));
-        allChecksPassed = false;
-    } else if (freeSpace > 0 && freeSpace < imageSize * 3) {
-        logMessage("WARNING",
-                   QString("Мало свободного места в /tmp: %1 (рекомендуется не менее %2)")
-                   .arg(Utils::formatSize(freeSpace))
-                   .arg(Utils::formatSize(imageSize * 3)));
-    }
-
-    // Проверка целостности архива
-    if (Utils::isCompressedArchive(m_selectedImage.path)) {
-        logMessage("INFO", "Проверка целостности архива...");
-        if (!Utils::verifyArchiveIntegrity(m_selectedImage.path)) {
-            logMessage("ERROR", "Образ поврежден!");
-            allChecksPassed = false;
-        } else {
-            logMessage("SUCCESS", "Целостность архива проверена");
-        }
-    }
-
+    
     // Проверка доступности файла
     QFileInfo fi(m_selectedImage.path);
     if (!fi.exists() || !fi.isReadable()) {
         logMessage("ERROR", "Файл образа недоступен для чтения!");
-        allChecksPassed = false;
+        return false;
     }
-
-    // Проверка размера
+    
     if (fi.size() == 0) {
         logMessage("ERROR", "Файл образа пустой!");
-        allChecksPassed = false;
+        return false;
     }
-
-    return allChecksPassed;
+    
+    // Проверяем, что устройство не является системным диском
+    if (m_selectedDevice.path == "/dev/sda" || m_selectedDevice.path.startsWith("/dev/nvme0n1")) {
+        logMessage("WARNING", "Выбрано устройство, которое может быть системным диском!");
+        return m_forceCheckbox->isChecked();
+    }
+    
+    return true;
 }
 
-void MainWindow::verifyImageBeforeWrite() {
-    if (m_selectedImage.path.isEmpty()) return;
-
-    logMessage("INFO", "Проверка целостности образа...");
-
-    // Проверка доступности файла
-    QFileInfo fi(m_selectedImage.path);
-    if (!fi.exists() || !fi.isReadable()) {
-        logMessage("ERROR", "Файл образа недоступен для чтения!");
+void MainWindow::onShowFormatDialog() {
+    if (m_selectedDevice.path.isEmpty()) {
+        QMessageBox::warning(this, "Внимание", "Сначала выберите устройство!");
         return;
     }
+    
+    showFormatDialog();
+}
 
-    // Проверка размера
-    if (fi.size() == 0) {
-        logMessage("ERROR", "Файл образа пустой!");
-        return;
+void MainWindow::showFormatDialog() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Интеллектуальное форматирование");
+    dialog.resize(600, 500);
+    
+    QVBoxLayout* mainLayout = new QVBoxLayout(&dialog);
+    
+    // Заголовок
+    QLabel* title = new QLabel(QString("Форматирование устройства: %1").arg(m_selectedDevice.path));
+    title->setStyleSheet("font-weight: bold; font-size: 14px;");
+    mainLayout->addWidget(title);
+    
+    // Информация об устройстве
+    QGroupBox* infoGroup = new QGroupBox("Информация об устройстве");
+    QFormLayout* infoLayout = new QFormLayout;
+    
+    infoLayout->addRow("Устройство:", new QLabel(m_selectedDevice.path));
+    infoLayout->addRow("Размер:", new QLabel(m_selectedDevice.sizeStr));
+    infoLayout->addRow("Модель:", new QLabel(m_selectedDevice.model.isEmpty() ? "Неизвестно" : m_selectedDevice.model));
+    
+    QString fsType = Utils::getFilesystemType(m_selectedDevice.path);
+    infoLayout->addRow("Текущая ФС:", new QLabel(fsType));
+    
+    QString mounts = m_selectedDevice.mountPoints.isEmpty() ? 
+        "Не смонтировано" : m_selectedDevice.mountPoints.join(", ");
+    infoLayout->addRow("Состояние:", new QLabel(mounts));
+    
+    infoGroup->setLayout(infoLayout);
+    mainLayout->addWidget(infoGroup);
+    
+    // Предполагаемое использование
+    QGroupBox* usageGroup = new QGroupBox("Предполагаемое использование");
+    QVBoxLayout* usageLayout = new QVBoxLayout;
+    
+    QComboBox* usageCombo = new QComboBox;
+    usageCombo->addItems({
+        "Автоматический выбор",
+        "Windows",
+        "Linux",
+        "macOS",
+        "Android",
+        "Игровые приставки",
+        "Мультиплатформенное использование",
+        "Резервное копирование",
+        "Хранение данных"
+    });
+    
+    usageLayout->addWidget(new QLabel("Как планируете использовать устройство?"));
+    usageLayout->addWidget(usageCombo);
+    usageGroup->setLayout(usageLayout);
+    mainLayout->addWidget(usageGroup);
+    
+    // Рекомендации системы
+    QGroupBox* recommendationGroup = new QGroupBox("Рекомендации системы");
+    QVBoxLayout* recLayout = new QVBoxLayout;
+    
+    FormatRecommendation recommendation = m_formatManager->getRecommendation(
+        m_selectedDevice.path, 
+        m_selectedDevice.sizeBytes,
+        usageCombo->currentText()
+    );
+    
+    QLabel* recLabel = new QLabel(recommendation.explanation);
+    recLabel->setWordWrap(true);
+    recLabel->setStyleSheet("color: #0066cc; font-weight: bold;");
+    
+    QLabel* fsLabel = new QLabel(QString("Рекомендуемая файловая система: <b>%1</b>").arg(recommendation.filesystem));
+    QLabel* clusterLabel = new QLabel(QString("Рекомендуемый размер кластера: <b>%1</b>").arg(
+        Utils::formatSize(recommendation.clusterSize)));
+    
+    recLayout->addWidget(recLabel);
+    recLayout->addWidget(fsLabel);
+    recLayout->addWidget(clusterLabel);
+    
+    QLabel* partLabel = nullptr;
+    if (recommendation.needsPartitioning) {
+        partLabel = new QLabel("⚠ Рекомендуется создание разделов для больших дисков");
+        partLabel->setStyleSheet("color: #ff6600;");
+        recLayout->addWidget(partLabel);
     }
-
-    // Для сжатых архивов проверяем структуру
-    if (Utils::isCompressedArchive(m_selectedImage.path)) {
-        if (!Utils::verifyArchiveIntegrity(m_selectedImage.path)) {
-            logMessage("WARNING", "Образ может быть поврежден!");
-        } else {
-            logMessage("SUCCESS", "Структура архива в порядке");
+    
+    recommendationGroup->setLayout(recLayout);
+    mainLayout->addWidget(recommendationGroup);
+    
+    // Настройки форматирования
+    QGroupBox* settingsGroup = new QGroupBox("Настройки форматирования");
+    QFormLayout* settingsLayout = new QFormLayout;
+    
+    QComboBox* fsCombo = new QComboBox;
+    QList<FilesystemInfo> allFS = m_formatManager->getAllFilesystems();
+    
+    for (const auto& fs : allFS) {
+        if (m_formatManager->isFilesystemSupported(fs.name, m_selectedDevice.sizeBytes)) {
+            QString display = QString("%1 (%2)").arg(fs.name).arg(fs.description.left(40) + "...");
+            fsCombo->addItem(display, fs.name);
         }
     }
-
-    logMessage("SUCCESS", "Базовая проверка образа завершена");
+    
+    // Устанавливаем рекомендуемую файловую систему
+    int recommendedIndex = fsCombo->findData(recommendation.filesystem);
+    if (recommendedIndex >= 0) {
+        fsCombo->setCurrentIndex(recommendedIndex);
+    }
+    
+    QComboBox* clusterCombo = new QComboBox;
+    QString selectedFS = fsCombo->currentData().toString();
+    FilesystemInfo fsInfo = m_formatManager->getFilesystemInfo(selectedFS);
+    
+    for (int clusterSize : fsInfo.clusterSizes) {
+        clusterCombo->addItem(Utils::formatSize(clusterSize), clusterSize);
+    }
+    
+    // Устанавливаем рекомендуемый размер кластера
+    int recommendedClusterIndex = clusterCombo->findData(recommendation.clusterSize);
+    if (recommendedClusterIndex >= 0) {
+        clusterCombo->setCurrentIndex(recommendedClusterIndex);
+    }
+    
+    QLineEdit* labelEdit = new QLineEdit;
+    labelEdit->setPlaceholderText("Метка устройства (не обязательно)");
+    
+    QCheckBox* quickFormatCheck = new QCheckBox("Быстрое форматирование");
+    quickFormatCheck->setChecked(true);
+    
+    settingsLayout->addRow("Файловая система:", fsCombo);
+    settingsLayout->addRow("Размер кластера:", clusterCombo);
+    settingsLayout->addRow("Метка:", labelEdit);
+    settingsLayout->addRow("", quickFormatCheck);
+    
+    settingsGroup->setLayout(settingsLayout);
+    mainLayout->addWidget(settingsGroup);
+    
+    // Обновляем размеры кластеров при изменении файловой системы
+    connect(fsCombo, &QComboBox::currentIndexChanged, [&, fsCombo, clusterCombo]() {
+        QString fsName = fsCombo->currentData().toString();
+        FilesystemInfo fsInfo = m_formatManager->getFilesystemInfo(fsName);
+        
+        clusterCombo->clear();
+        for (int clusterSize : fsInfo.clusterSizes) {
+            clusterCombo->addItem(Utils::formatSize(clusterSize), clusterSize);
+        }
+        
+        // Устанавливаем оптимальный размер
+        int optimalSize = m_formatManager->getOptimalClusterSize(fsName, m_selectedDevice.sizeBytes);
+        int optimalIndex = clusterCombo->findData(optimalSize);
+        if (optimalIndex >= 0) {
+            clusterCombo->setCurrentIndex(optimalIndex);
+        }
+    });
+    
+    // Обновляем рекомендации при изменении использования
+    connect(usageCombo, &QComboBox::currentTextChanged, [&, usageCombo, recLabel, fsLabel, clusterLabel, 
+                                                          fsCombo, partLabel, recommendationGroup]() {
+        FormatRecommendation newRec = m_formatManager->getRecommendation(
+            m_selectedDevice.path, 
+            m_selectedDevice.sizeBytes,
+            usageCombo->currentText()
+        );
+        
+        recLabel->setText(newRec.explanation);
+        fsLabel->setText(QString("Рекомендуемая файловая система: <b>%1</b>").arg(newRec.filesystem));
+        clusterLabel->setText(QString("Рекомендуемый размер кластера: <b>%1</b>").arg(
+            Utils::formatSize(newRec.clusterSize)));
+        
+        // Обновляем выбор файловой системы
+        int recIndex = fsCombo->findData(newRec.filesystem);
+        if (recIndex >= 0) {
+            fsCombo->setCurrentIndex(recIndex);
+        }
+        
+        // Показываем/скрываем предупреждение о разделах
+        if (partLabel) {
+            partLabel->setVisible(newRec.needsPartitioning);
+        }
+    });
+    
+    // Кнопки
+    QHBoxLayout* buttonLayout = new QHBoxLayout;
+    QPushButton* formatBtn = new QPushButton("Форматировать");
+    QPushButton* cancelBtn = new QPushButton("Отмена");
+    
+    formatBtn->setStyleSheet("background-color: #ff4444; color: white; font-weight: bold;");
+    
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(cancelBtn);
+    buttonLayout->addWidget(formatBtn);
+    
+    mainLayout->addLayout(buttonLayout);
+    
+    // Соединения
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(formatBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    
+    if (dialog.exec() == QDialog::Accepted) {
+        // Получаем выбранные параметры
+        QString filesystem = fsCombo->currentData().toString();
+        int clusterSize = clusterCombo->currentData().toInt();
+        QString label = labelEdit->text().trimmed();
+        bool quickFormat = quickFormatCheck->isChecked();
+        
+        // Подтверждение
+        QString warning = QString(
+            "<b>ВНИМАНИЕ! Все данные на %1 будут уничтожены!</b><br><br>"
+            "Параметры форматирования:<br>"
+            "• Файловая система: <b>%2</b><br>"
+            "• Размер кластера: <b>%3</b><br>"
+            "• Метка: <b>%4</b><br>"
+            "• Быстрое форматирование: <b>%5</b><br><br>"
+            "Продолжить?"
+        ).arg(m_selectedDevice.path)
+         .arg(filesystem)
+         .arg(Utils::formatSize(clusterSize))
+         .arg(label.isEmpty() ? "(нет)" : label)
+         .arg(quickFormat ? "Да" : "Нет");
+        
+        if (QMessageBox::warning(this, "Подтверждение", warning, 
+                                QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+            formatDeviceIntelligently(m_selectedDevice.path, m_selectedDevice.sizeBytes,
+                                     filesystem, clusterSize, label, quickFormat);
+        }
+    }
 }
 
-void MainWindow::calculateImageHash() {
-    if (m_selectedImage.path.isEmpty()) return;
-
-    QProgressDialog progress("Вычисление хэша образа...", "Отмена", 0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.show();
-
-    // Запускаем в отдельном потоке для вычисления хэша
-    QFuture<void> future = QtConcurrent::run([this]() {
-        QByteArray hash = Utils::calculateFileHash(m_selectedImage.path,
-                                                   QCryptographicHash::Sha256);
-
-        if (!hash.isEmpty()) {
-            QString hashStr = Utils::hashToHex(hash);
-            QMetaObject::invokeMethod(this, [this, hashStr]() {
-                logMessage("INFO", "SHA256 хэш образа: " + hashStr);
-                QMessageBox::information(this, "Хэш образа",
-                                         "SHA256 хэш:\n" + hashStr);
+void MainWindow::formatDeviceIntelligently(const QString& devicePath, qint64 sizeBytes,
+                                          const QString& filesystem, int clusterSize,
+                                          const QString& label, bool quickFormat) {
+    m_currentFormatDevice = devicePath;
+    
+    // Создаем диалог прогресса
+    m_formatProgressDialog = new QProgressDialog(this);
+    m_formatProgressDialog->setWindowTitle("Форматирование");
+    m_formatProgressDialog->setLabelText("Подготовка к форматированию...");
+    m_formatProgressDialog->setRange(0, 100);
+    m_formatProgressDialog->setValue(0);
+    m_formatProgressDialog->setCancelButtonText("Отмена");
+    m_formatProgressDialog->setMinimumDuration(0);
+    
+    // Запускаем форматирование в отдельном потоке
+    QFuture<void> future = QtConcurrent::run([this, devicePath, sizeBytes, filesystem, clusterSize, label, quickFormat]() {
+        updateFormatProgress("Размонтирование устройства...", 10);
+        
+        // Размонтируем устройство
+        auto [success, message] = DeviceManager::unmountAll(devicePath);
+        if (!success && !m_selectedDevice.mountPoints.isEmpty()) {
+            updateFormatProgress("Ошибка: не удалось размонтировать устройство", -1);
+            return;
+        }
+        
+        updateFormatProgress("Начало форматирования...", 20);
+        
+        // Форматируем устройство
+        bool formatSuccess = m_formatManager->formatDevice(devicePath, filesystem, 
+                                                          clusterSize, label, quickFormat);
+        
+        if (formatSuccess) {
+            updateFormatProgress("Форматирование успешно завершено!", 100);
+            QThread::msleep(1000);
+            
+            QMetaObject::invokeMethod(this, [this, devicePath]() {
+                if (m_formatProgressDialog) {
+                    m_formatProgressDialog->close();
+                    m_formatProgressDialog->deleteLater();
+                    m_formatProgressDialog = nullptr;
+                }
+                
+                QMessageBox::information(this, "Успех", 
+                    QString("Устройство %1 успешно отформатировано!").arg(devicePath));
+                
+                // Обновляем информацию об устройстве
+                refreshDevices();
+            }, Qt::QueuedConnection);
+        } else {
+            updateFormatProgress("Ошибка форматирования", -1);
+            
+            QMetaObject::invokeMethod(this, [this]() {
+                if (m_formatProgressDialog) {
+                    m_formatProgressDialog->close();
+                    m_formatProgressDialog->deleteLater();
+                    m_formatProgressDialog = nullptr;
+                }
+                
+                QMessageBox::critical(this, "Ошибка", "Не удалось отформатировать устройство");
             }, Qt::QueuedConnection);
         }
     });
-
-    // Создаем таймер для обновления прогресса
-    QTimer updateTimer;
-    updateTimer.setInterval(100);
-    int progressValue = 0;
-
-    connect(&updateTimer, &QTimer::timeout, [&]() {
-        if (future.isFinished()) {
-            progress.setValue(100);
-            updateTimer.stop();
-        } else {
-            progressValue = (progressValue + 5) % 100;
-            progress.setValue(progressValue);
-        }
+    
+    // Явно игнорируем возвращаемое значение, чтобы избежать предупреждения
+    (void)future;
+    
+    // Обработка отмены
+    connect(m_formatProgressDialog, &QProgressDialog::canceled, [this]() {
+        // Можно добавить логику отмены форматирования
+        QMessageBox::information(this, "Отмена", "Операция форматирования отменена");
     });
-
-    updateTimer.start();
-
-    // Запускаем событийный цикл
-    while (!future.isFinished()) {
-        QApplication::processEvents();
-        if (progress.wasCanceled()) {
-            future.cancel();
-            break;
-        }
-    }
+    
+    m_formatProgressDialog->show();
 }
 
-void MainWindow::wipeDeviceSecurely() {
-    if (m_selectedDevice.path.isEmpty()) return;
-
-    QString msg = QString(
-        "<b>ВНИМАНИЕ! Все данные на %1 будут безвозвратно уничтожены!</b><br><br>"
-        "Устройство будет заполнено нулями.<br><br>"
-        "Продолжить?")
-    .arg(m_selectedDevice.path);
-
-    if (QMessageBox::critical(this, "Подтверждение", msg,
-        QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
-        return;
-        }
-
-        logMessage("INFO", "Начало безопасного удаления данных...");
-
-    // Отключаем автообновление
-    m_refreshTimer->stop();
-
-    QProgressDialog progress("Безопасное удаление данных...", "Отмена", 0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.show();
-
-    QFuture<void> future = QtConcurrent::run([this]() {
-        bool success = Utils::zeroFillDevice(m_selectedDevice.path);
-
-        QMetaObject::invokeMethod(this, [this, success]() {
-            if (success) {
-                logMessage("SUCCESS", "Данные успешно удалены с устройства");
-            } else {
-                logMessage("ERROR", "Ошибка при удалении данных");
+void MainWindow::updateFormatProgress(const QString& message, int percent) {
+    QMetaObject::invokeMethod(this, [this, message, percent]() {
+        if (m_formatProgressDialog) {
+            m_formatProgressDialog->setLabelText(message);
+            if (percent >= 0) {
+                m_formatProgressDialog->setValue(percent);
             }
-            // Включаем автообновление обратно
-            m_refreshTimer->start(5000);
-            refreshDevices();
-        }, Qt::QueuedConnection);
-    });
-
-    // Создаем таймер для обновления прогресса
-    QTimer updateTimer;
-    updateTimer.setInterval(100);
-    int progressValue = 0;
-
-    connect(&updateTimer, &QTimer::timeout, [&]() {
-        if (future.isFinished()) {
-            progress.setValue(100);
-            updateTimer.stop();
-        } else {
-            progressValue = (progressValue + 5) % 100;
-            progress.setValue(progressValue);
         }
-    });
+    }, Qt::QueuedConnection);
+}
 
-    updateTimer.start();
+// Реализация слота onFormatDevice()
+void MainWindow::onFormatDevice() {
+    // Это устаревший слот, перенаправляем на новый диалог
+    qDebug() << "onFormatDevice called, redirecting to onShowFormatDialog";
+    onShowFormatDialog();
+}
 
-    // Запускаем событийный цикл
-    while (!future.isFinished()) {
-        QApplication::processEvents();
-        if (progress.wasCanceled()) {
-            future.cancel();
-            break;
-        }
+// Реализация слота onFormatProgress()
+void MainWindow::onFormatProgress(const QString& message, int percent) {
+    // Это устаревший слот, перенаправляем на новую функцию
+    qDebug() << QString("onFormatProgress: %1 (%2%)").arg(message).arg(percent);
+    updateFormatProgress(message, percent);
+}
+
+// Реализация слота onFormatFinished()
+void MainWindow::onFormatFinished(bool success, const QString& message) {
+    qDebug() << QString("onFormatFinished: success=%1, message=%2").arg(success).arg(message);
+    
+    if (success) {
+        logMessage("SUCCESS", QString("Форматирование завершено успешно: %1").arg(message));
+        QMessageBox::information(this, "Успех", 
+            QString("Устройство успешно отформатировано!\n\n%1").arg(message));
+    } else {
+        logMessage("ERROR", QString("Ошибка форматирования: %1").arg(message));
+        QMessageBox::critical(this, "Ошибка", 
+            QString("Не удалось отформатировать устройство:\n\n%1").arg(message));
+    }
+    
+    // Обновляем список устройств
+    refreshDevices();
+    
+    // Закрываем диалог прогресса, если он открыт
+    if (m_formatProgressDialog) {
+        m_formatProgressDialog->close();
+        m_formatProgressDialog->deleteLater();
+        m_formatProgressDialog = nullptr;
     }
 }
 
-void MainWindow::testWriteSpeed() {
-    if (m_selectedDevice.path.isEmpty()) return;
-
-    logMessage("INFO", "Тестирование скорости записи...");
-
-    // Создаем временный файл для тестирования (10MB)
-    QString testFile = Utils::createTestPatternFile(10);
-    if (testFile.isEmpty()) {
-        logMessage("ERROR", "Не удалось создать тестовый файл");
-        return;
+void MainWindow::logMessage(const QString& level, const QString& msg) {
+    QString time = QDateTime::currentDateTime().toString("HH:mm:ss");
+    QString color;
+    
+    if (level == "ERROR") color = "#ff4444";
+    else if (level == "SUCCESS") color = "#44ff44";
+    else if (level == "WARNING") color = "#ffaa44";
+    else if (level == "INFO") color = "#4488ff";
+    else if (level == "PROGRESS") color = "#ff88ff";
+    else color = "#ffffff";
+    
+    // Для прогресса не добавляем время (чтобы не дублировать)
+    if (level == "PROGRESS") {
+        m_logView->append(QString("<font color=\"%1\">%2</font>").arg(color).arg(msg));
+    } else {
+        m_logView->append(QString("<font color=\"%1\">[%2] %3</font>").arg(color).arg(time).arg(msg));
     }
-
-    QProgressDialog progress("Тестирование скорости записи...", "Отмена", 0, 100, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.show();
-
-    QFuture<void> future = QtConcurrent::run([this, testFile]() {
-        QElapsedTimer timer;
-        timer.start();
-
-        int fd = ::open(m_selectedDevice.path.toLocal8Bit().constData(), O_WRONLY | O_SYNC);
-        if (fd < 0) {
-            QFile::remove(testFile);
-            return;
-        }
-
-        QFile file(testFile);
-        if (!file.open(QIODevice::ReadOnly)) {
-            ::close(fd);
-            QFile::remove(testFile);
-            return;
-        }
-
-        qint64 totalSize = file.size();
-        qint64 written = 0;
-        const qint64 bufferSize = 4 * 1024 * 1024;
-
-        while (!file.atEnd()) {
-            QByteArray chunk = file.read(bufferSize);
-            ssize_t result = ::write(fd, chunk.constData(), chunk.size());
-            if (result != static_cast<ssize_t>(chunk.size())) break;
-            written += result;
-        }
-
-        ::fsync(fd);
-        ::close(fd);
-        file.close();
-        QFile::remove(testFile);
-
-        qint64 elapsed = timer.elapsed();
-        double speed = (elapsed > 0) ? (totalSize / 1024.0 / 1024.0) / (elapsed / 1000.0) : 0;
-
-        QMetaObject::invokeMethod(this, [this, speed, elapsed]() {
-            logMessage("SUCCESS",
-                       QString("Тест скорости завершен: %1 МБ/с, время: %2 мс")
-                       .arg(speed, 0, 'f', 2)
-                       .arg(elapsed));
-        }, Qt::QueuedConnection);
-    });
-
-    // Создаем таймер для обновления прогресса
-    QTimer updateTimer;
-    updateTimer.setInterval(100);
-    int progressValue = 0;
-
-    connect(&updateTimer, &QTimer::timeout, [&]() {
-        if (future.isFinished()) {
-            progress.setValue(100);
-            updateTimer.stop();
-        } else {
-            progressValue = (progressValue + 5) % 100;
-            progress.setValue(progressValue);
-        }
-    });
-
-    updateTimer.start();
-
-    // Запускаем событийный цикл
-    while (!future.isFinished()) {
-        QApplication::processEvents();
-        if (progress.wasCanceled()) {
-            future.cancel();
-            break;
-        }
-    }
-}
-
-void MainWindow::onVerifyImage() {
-    // Реализация проверки образа
-    if (m_selectedImage.path.isEmpty()) {
-        logMessage("ERROR", "Не выбран образ для проверки!");
-        return;
-    }
-    verifyImageBeforeWrite();
-}
-
-void MainWindow::onCalculateHash() {
-    // Реализация вычисления хэша
-    if (m_selectedImage.path.isEmpty()) {
-        logMessage("ERROR", "Не выбран образ для вычисления хэша!");
-        return;
-    }
-    calculateImageHash();
-}
-
-void MainWindow::onWipeDevice() {
-    // Реализация очистки устройства
-    if (m_selectedDevice.path.isEmpty()) {
-        logMessage("ERROR", "Не выбрано устройство для очистки!");
-        return;
-    }
-    wipeDeviceSecurely();
-}
-
-void MainWindow::onTestSpeed() {
-    // Реализация теста скорости
-    if (m_selectedDevice.path.isEmpty()) {
-        logMessage("ERROR", "Не выбрано устройство для теста скорости!");
-        return;
-    }
-    testWriteSpeed();
-}
-
-void MainWindow::onAdvancedSettings() {
-    // Реализация расширенных настроек
-    QMessageBox::information(this, "Расширенные настройки",
-                             "Расширенные настройки будут реализованы в будущих версиях.");
+    
+    m_logView->moveCursor(QTextCursor::End);
 }
 
 MainWindow::~MainWindow() {
-    qDebug() << "Начало уничтожения MainWindow...";
-
-    try {
-        // 1. Останавливаем все активные операции
-        stopAllActiveOperations();
-
-        // 2. Отключаем все соединения
-        disconnectAllConnections();
-
-        // 3. Очищаем UI элементы
-        cleanupUI();
-
-        // 4. Очищаем данные
-        cleanupData();
-
-        // 5. Освобождаем ресурсы
-        cleanupResources();
-
-        qDebug() << "MainWindow уничтожен успешно";
-    }
-    catch (const std::exception& e) {
-        qCritical() << "Ошибка при уничтожении MainWindow:" << e.what();
-    }
-    catch (...) {
-        qCritical() << "Неизвестная ошибка при уничтожении MainWindow";
-    }
-}
-
-void MainWindow::stopAllActiveOperations() {
-    qDebug() << "Остановка активных операций...";
-
-    // Останавливаем таймер обновления
     if (m_refreshTimer && m_refreshTimer->isActive()) {
-        qDebug() << "Остановка таймера обновления...";
         m_refreshTimer->stop();
     }
-
-    // Останавливаем рабочий поток
+    
     if (m_writer && m_writer->isRunning()) {
-        qDebug() << "Остановка рабочего потока записи...";
-
-        // Отправляем сигнал отмены
-        emit cancelAllOperations();
-
-        // Устанавливаем флаг отмены в потоке
         m_writer->cancel();
-
-        // Ждем завершения с таймаутом
-        const int timeoutMs = 5000;
-        if (m_writer->wait(timeoutMs)) {
-            qDebug() << "Рабочий поток завершен корректно";
-        } else {
-            qWarning() << "Рабочий поток не завершился за" << timeoutMs << "мс";
-
-            // Пытаемся принудительно завершить
+        if (!m_writer->wait(2000)) {
             m_writer->terminate();
-
-            if (!m_writer->wait(1000)) {
-                qCritical() << "Не удалось завершить рабочий поток";
-            }
+            m_writer->wait(1000);
         }
+        delete m_writer;
+        m_writer = nullptr;
     }
-
-    // Останавливаем все фоновые операции QtConcurrent
-    qDebug() << "Ожидание завершения фоновых операций...";
-    QThreadPool::globalInstance()->waitForDone(3000);
-}
-
-void MainWindow::disconnectAllConnections() {
-    qDebug() << "Отключение всех соединений...";
-
-    // Отключаем сигналы от таймера
-    if (m_refreshTimer) {
-        disconnect(m_refreshTimer, nullptr, nullptr, nullptr);
-    }
-
-    // Отключаем сигналы от рабочего потока
-    if (m_writer) {
-        disconnect(m_writer, nullptr, nullptr, nullptr);
-    }
-
-    // Отключаем все сигналы MainWindow
-    disconnect(this, nullptr, nullptr, nullptr);
-
-    // Отключаем сигналы от виджетов
-    if (m_imageCombo) disconnect(m_imageCombo, nullptr, nullptr, nullptr);
-    if (m_deviceCombo) disconnect(m_deviceCombo, nullptr, nullptr, nullptr);
-}
-
-void MainWindow::cleanupUI() {
-    qDebug() << "Очистка UI элементов...";
-
-    // Очищаем комбобоксы
-    if (m_imageCombo) {
-        m_imageCombo->clear();
-        m_imageCombo->setEnabled(false);
-    }
-    if (m_deviceCombo) {
-        m_deviceCombo->clear();
-        m_deviceCombo->setEnabled(false);
-    }
-
-    // Очищаем другие виджеты
-    if (m_logView) {
-        m_logView->clear();
-        m_logView->setEnabled(false);
-    }
-    if (m_progressBar) {
-        m_progressBar->setValue(0);
-        m_progressBar->setEnabled(false);
-    }
-
-    // Отключаем кнопки
-    if (m_writeBtn) m_writeBtn->setEnabled(false);
-    if (m_cancelBtn) m_cancelBtn->setEnabled(false);
-    if (m_refreshBtn) m_refreshBtn->setEnabled(false);
-}
-
-void MainWindow::clearTable(QTableWidget* table, const QString& tableName) {
-    if (!table) return;
-
-    qDebug() << "Очистка" << tableName << "...";
-
-    // Сохраняем ссылки на элементы перед удалением
-    QList<QTableWidgetItem*> items;
-    const int rows = table->rowCount();
-    const int cols = table->columnCount();
-
-    // Собираем все элементы
-    for (int row = 0; row < rows; ++row) {
-        for (int col = 0; col < cols; ++col) {
-            QTableWidgetItem* item = table->item(row, col);
-            if (item) {
-                items.append(item);
-                table->setItem(row, col, nullptr);
-            }
-        }
-    }
-
-    // Очищаем таблицу
-    table->clear();
-    table->setRowCount(0);
-
-    // Удаляем элементы
-    qDeleteAll(items);
-
-    qDebug() << tableName << "очищена, удалено элементов:" << items.size();
-}
-
-void MainWindow::cleanupData() {
-    qDebug() << "Очистка данных...";
-
-    m_devices.clear();
-    m_images.clear();
-
-    // Сбрасываем выбранные элементы
-    m_selectedDevice = DeviceInfo();
-    m_selectedImage = ImageInfo();
-
-    qDebug() << "Данные очищены";
-}
-
-void MainWindow::cleanupResources() {
-    qDebug() << "Освобождение ресурсов...";
-
-    // Удаляем таймер
+    
     if (m_refreshTimer) {
         delete m_refreshTimer;
         m_refreshTimer = nullptr;
-        qDebug() << "Таймер удален";
     }
-
-    // Удаляем рабочий поток
-    if (m_writer) {
-        // Проверяем, что поток завершен
-        if (m_writer->isRunning()) {
-            qWarning() << "Попытка удаления работающего потока, ожидание...";
-            m_writer->wait(1000);
-        }
-
-        delete m_writer;
-        m_writer = nullptr;
-        qDebug() << "Рабочий поток удален";
+    
+    if (m_writeTimer) {
+        delete m_writeTimer;
+        m_writeTimer = nullptr;
     }
-
-    // Очищаем указатели (они удаляются автоматически как дети MainWindow)
-    m_tabWidget = nullptr;
-    m_deviceCombo = nullptr;
-    m_imageCombo = nullptr;
-    m_blockSizeCombo = nullptr;
-    m_verifyCheckbox = nullptr;
-    m_forceCheckbox = nullptr;
-    m_imagesDirEdit = nullptr;
-    m_deviceInfoLabel = nullptr;
-    m_imageInfoLabel = nullptr;
-    m_progressBar = nullptr;
-    m_logView = nullptr;
-    m_writeBtn = nullptr;
-    m_cancelBtn = nullptr;
-    m_refreshBtn = nullptr;
-
-    qDebug() << "Ресурсы освобождены";
+    
+    if (m_formatProgressDialog) {
+        delete m_formatProgressDialog;
+        m_formatProgressDialog = nullptr;
+    }
 }

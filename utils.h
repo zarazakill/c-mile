@@ -11,7 +11,7 @@
 #include <QStorageInfo>
 #include <QThread>
 #include <memory>
-#include <QTemporaryFile>  // Добавлено
+#include <QTemporaryFile>
 
 #include <fcntl.h>     // для open, O_WRONLY, O_SYNC
 #include <unistd.h>    // для close, write, fsync, fstat
@@ -93,185 +93,277 @@ namespace Utils {
 
         file.close();
         return hash.result();
-                                        }
+    }
 
-                                        /// Форматирование хэша в строку HEX
-                                        inline QString hashToHex(const QByteArray& hash) {
-                                            return hash.toHex().toUpper();
-                                        }
+    /// Форматирование хэша в строку HEX
+    inline QString hashToHex(const QByteArray& hash) {
+        return hash.toHex().toUpper();
+    }
 
-                                        /// Проверка целостности архива/образа (базовая проверка)
-                                        inline bool verifyArchiveIntegrity(const QString& filePath) {
-                                            QFileInfo fi(filePath);
-                                            QString ext = fi.suffix().toLower();
+    /// Проверка целостности архива/образа (базовая проверка)
+    inline bool verifyArchiveIntegrity(const QString& filePath) {
+        QFileInfo fi(filePath);
+        QString ext = fi.suffix().toLower();
 
-                                            // Для сжатых файлов проверяем структуру
-                                            if (ext == "gz") {
-                                                QFile file(filePath);
-                                                if (!file.open(QIODevice::ReadOnly)) return false;
+        // Для сжатых файлов проверяем структуру
+        if (ext == "gz") {
+            QFile file(filePath);
+            if (!file.open(QIODevice::ReadOnly)) return false;
 
-                                                // Проверяем сигнатуру GZIP
-                                                QByteArray header = file.read(10);
-                                                file.close();
+            // Проверяем сигнатуру GZIP
+            QByteArray header = file.read(10);
+            file.close();
 
-                                                return header.startsWith("\x1F\x8B\x08");
-                                            }
+            return header.startsWith("\x1F\x8B\x08");
+        }
 
-                                            // Для ZIP файлов проверяем структуру
-                                            if (ext == "zip") {
-                                                QFile file(filePath);
-                                                if (!file.open(QIODevice::ReadOnly)) return false;
+        // Для ZIP файлов проверяем структуру
+        if (ext == "zip") {
+            QFile file(filePath);
+            if (!file.open(QIODevice::ReadOnly)) return false;
 
-                                                // Ищем сигнатуру в конце файла (EOCD)
-                                                file.seek(file.size() - 22);
-                                                QByteArray eocd = file.read(22);
-                                                file.close();
+            // Ищем сигнатуру в конце файла (EOCD)
+            file.seek(file.size() - 22);
+            QByteArray eocd = file.read(22);
+            file.close();
 
-                                                return eocd.startsWith("PK\x05\x06");
-                                            }
+            return eocd.startsWith("PK\x05\x06");
+        }
 
-                                            // Для других типов пока возвращаем true
-                                            return true;
-                                        }
+        // Для других типов пока возвращаем true
+        return true;
+    }
 
-                                        /// Проверка свободного места в директории
-                                        inline qint64 getFreeSpace(const QString& path) {
-                                            QStorageInfo storage(path);
-                                            if (storage.isValid() && storage.isReady()) {
-                                                return storage.bytesFree();
-                                            }
-                                            return -1;
-                                        }
+    /// Проверка свободного места в директории
+    inline qint64 getFreeSpace(const QString& path) {
+        QStorageInfo storage(path);
+        if (storage.isValid() && storage.isReady()) {
+            return storage.bytesFree();
+        }
+        return -1;
+    }
 
-                                        /// Безопасное заполнение нулями (один проход)
-                                        inline bool zeroFillDevice(const QString& devicePath, qint64 size = -1) {
-                                            int fd = ::open(devicePath.toLocal8Bit().constData(), O_WRONLY | O_SYNC);
-                                            if (fd < 0) return false;
+    /// Безопасное заполнение нулями (один проход)
+    inline bool zeroFillDevice(const QString& devicePath, qint64 size = -1) {
+        int fd = ::open(devicePath.toLocal8Bit().constData(), O_WRONLY | O_SYNC);
+        if (fd < 0) return false;
 
-                                            // Определяем размер устройства, если не указан
-                                            if (size < 0) {
-                                                struct stat st;
-                                                if (::fstat(fd, &st) != 0) {
-                                                    ::close(fd);
-                                                    return false;
-                                                }
-                                                size = st.st_size;
-                                            }
+        // Определяем размер устройства, если не указан
+        if (size < 0) {
+            struct stat st;
+            if (::fstat(fd, &st) != 0) {
+                ::close(fd);
+                return false;
+            }
+            size = st.st_size;
+        }
 
-                                            const size_t bufferSize = 4 * 1024 * 1024; // 4MB
-                                            std::unique_ptr<char[]> zeroBuffer(new char[bufferSize]()); // Инициализируем нулями
+        const size_t bufferSize = 4 * 1024 * 1024; // 4MB
+        std::unique_ptr<char[]> zeroBuffer(new char[bufferSize]()); // Инициализируем нулями
 
-                                            qint64 written = 0;
-                                            while (written < size) {
-                                                size_t toWrite = qMin<size_t>(bufferSize, size - written);
-                                                ssize_t result = ::write(fd, zeroBuffer.get(), toWrite);
-                                                if (result < 0) {
-                                                    ::close(fd);
-                                                    return false;
-                                                }
-                                                written += result;
-                                            }
+        qint64 written = 0;
+        while (written < size) {
+            size_t toWrite = qMin<size_t>(bufferSize, size - written);
+            ssize_t result = ::write(fd, zeroBuffer.get(), toWrite);
+            if (result < 0) {
+                ::close(fd);
+                return false;
+            }
+            written += result;
+        }
 
-                                            ::fsync(fd);
-                                            ::close(fd);
-                                            return written == size;
-                                        }
+        ::fsync(fd);
+        ::close(fd);
+        return written == size;
+    }
 
-                                        /// Проверка размера образа относительно устройства
-                                        inline bool checkImageFitsDevice(const QString& imagePath, const QString& devicePath) {
-                                            QFileInfo imageInfo(imagePath);
-                                            if (!imageInfo.exists()) return false;
+    /// Проверка размера образа относительно устройства
+    inline bool checkImageFitsDevice(const QString& imagePath, const QString& devicePath) {
+        QFileInfo imageInfo(imagePath);
+        if (!imageInfo.exists()) return false;
 
-                                            // Получаем размер образа
-                                            qint64 imageSize = imageInfo.size();
+        // Получаем размер образа
+        qint64 imageSize = imageInfo.size();
 
-                                            // Получаем размер устройства из /sys/block
-                                            QFileInfo devInfo(devicePath);
-                                            QString devName = devInfo.fileName();
-                                            QFile sizeFile("/sys/block/" + devName + "/size");
+        // Получаем размер устройства из /sys/block
+        QFileInfo devInfo(devicePath);
+        QString devName = devInfo.fileName();
+        QFile sizeFile("/sys/block/" + devName + "/size");
 
-                                            if (sizeFile.open(QIODevice::ReadOnly)) {
-                                                bool ok;
-                                                quint64 sectors = sizeFile.readAll().trimmed().toULongLong(&ok);
-                                                if (ok) {
-                                                    quint64 deviceSizeBytes = sectors * 512;
-                                                    return imageSize <= deviceSizeBytes;
-                                                }
-                                            }
+        if (sizeFile.open(QIODevice::ReadOnly)) {
+            bool ok;
+            quint64 sectors = sizeFile.readAll().trimmed().toULongLong(&ok);
+            if (ok) {
+                quint64 deviceSizeBytes = sectors * 512;
+                return imageSize <= deviceSizeBytes;
+            }
+        }
 
-                                            // Если не удалось получить размер из sysfs, используем fallback
-                                            return true; // Временно разрешаем запись
-                                        }
+        // Если не удалось получить размер из sysfs, используем fallback
+        return true; // Временно разрешаем запись
+    }
 
-                                        /// Создание временного файла для тестирования записи
-                                        inline QString createTestPatternFile(qint64 sizeMB) {
-                                            QTemporaryFile tempFile;
-                                            if (tempFile.open()) {
-                                                QString path = tempFile.fileName();
-                                                tempFile.close();
+    /// Создание временного файла для тестирования записи
+    inline QString createTestPatternFile(qint64 sizeMB) {
+        QTemporaryFile tempFile;
+        if (tempFile.open()) {
+            QString path = tempFile.fileName();
+            tempFile.close();
 
-                                                QFile file(path);
-                                                if (file.open(QIODevice::WriteOnly)) {
-                                                    // Создаем паттерн данных для тестирования
-                                                    const int patternSize = 1024 * 1024; // 1MB
-                                                    QByteArray pattern(patternSize, 0);
+            QFile file(path);
+            if (file.open(QIODevice::WriteOnly)) {
+                // Создаем паттерн данных для тестирования
+                const int patternSize = 1024 * 1024; // 1MB
+                QByteArray pattern(patternSize, 0);
 
-                                                    // Заполняем паттерн данными
-                                                    for (int i = 0; i < patternSize; i++) {
-                                                        pattern[i] = static_cast<char>(i % 256);
-                                                    }
+                // Заполняем паттерн данными
+                for (int i = 0; i < patternSize; i++) {
+                    pattern[i] = static_cast<char>(i % 256);
+                }
 
-                                                    for (qint64 i = 0; i < sizeMB; i++) {
-                                                        if (file.write(pattern) != patternSize) {
-                                                            return QString();
-                                                        }
-                                                    }
+                for (qint64 i = 0; i < sizeMB; i++) {
+                    if (file.write(pattern) != patternSize) {
+                        return QString();
+                    }
+                }
 
-                                                    file.close();
-                                                    return path;
-                                                }
-                                            }
-                                            return QString();
-                                        }
+                file.close();
+                return path;
+            }
+        }
+        return QString();
+    }
 
-                                        /// Получение информации о файловой системе устройства
-                                        inline QString getFilesystemType(const QString& devicePath) {
-                                            QFile mountsFile("/proc/mounts");
-                                            if (!mountsFile.open(QIODevice::ReadOnly)) return "unknown";
+    /// Получение информации о файловой системе устройства
+    inline QString getFilesystemType(const QString& devicePath) {
+        QFile mountsFile("/proc/mounts");
+        if (!mountsFile.open(QIODevice::ReadOnly)) return "unknown";
 
-                                            QTextStream in(&mountsFile);
-                                            while (!in.atEnd()) {
-                                                QString line = in.readLine();
-                                                if (line.startsWith(devicePath + " ")) {
-                                                    QStringList parts = line.split(' ', Qt::SkipEmptyParts);
-                                                    if (parts.size() >= 3) {
-                                                        return parts[2]; // Тип файловой системы
-                                                    }
-                                                }
-                                            }
+        QTextStream in(&mountsFile);
+        while (!in.atEnd()) {
+            QString line = in.readLine();
+            if (line.startsWith(devicePath + " ")) {
+                QStringList parts = line.split(' ', Qt::SkipEmptyParts);
+                if (parts.size() >= 3) {
+                    return parts[2]; // Тип файловой системы
+                }
+            }
+        }
 
-                                            // Проверяем через blkid (внутренняя реализация)
-                                            QFile devFile(devicePath);
-                                            if (devFile.open(QIODevice::ReadOnly)) {
-                                                // Читаем суперблок для определения FS
-                                                char buffer[1024];
-                                                if (devFile.read(buffer, sizeof(buffer)) > 0) {
-                                                    // Проверяем сигнатуры файловых систем
-                                                    if (memcmp(buffer + 0x438, "\x53\xEF", 2) == 0) return "ext4";
-                                                    if (memcmp(buffer + 0x52, "FAT32", 5) == 0) return "fat32";
-                                                    if (memcmp(buffer + 0x36, "FAT16", 5) == 0) return "fat16";
-                                                    if (memcmp(buffer + 0x3, "NTFS", 4) == 0) return "ntfs";
-                                                    if (memcmp(buffer + 0x1FE, "\x55\xAA", 2) == 0) return "mbr";
-                                                }
-                                            }
+        // Проверяем через чтение суперблока
+        QFile devFile(devicePath);
+        if (!devFile.open(QIODevice::ReadOnly)) {
+            return "unknown";
+        }
 
-                                            return "unknown";
-                                        }
+        // Читаем первые 2048 байт (где обычно находится суперблок)
+        const int BUFFER_SIZE = 2048;
+        char buffer[BUFFER_SIZE];
+        qint64 bytesRead = devFile.read(buffer, BUFFER_SIZE);
+        devFile.close();
 
-                                        /// Проверка, является ли файл сжатым архивом
-                                        inline bool isCompressedArchive(const QString& filePath) {
-                                            QString type = detectFileType(filePath);
-                                            return type.contains("Compressed") || type.contains("Archive");
-                                        }
+        if (bytesRead < 512) {
+            return "unknown";
+        }
+
+        // Вспомогательная функция для безопасной проверки памяти
+        auto safeMemcmp = [&](int offset, const char* pattern, int length) -> bool {
+            if (offset + length > bytesRead) return false;
+            return memcmp(buffer + offset, pattern, length) == 0;
+        };
+
+        // Проверяем сигнатуры файловых систем
+        // FAT32
+        if (safeMemcmp(0x52, "FAT32", 5)) {
+            return "FAT32";
+        }
+        // FAT16
+        if (safeMemcmp(0x36, "FAT16", 5)) {
+            return "FAT16";
+        }
+        // FAT12
+        if (safeMemcmp(0x36, "FAT12", 5)) {
+            return "FAT12";
+        }
+        // NTFS
+        if (safeMemcmp(0x03, "NTFS", 4)) {
+            return "NTFS";
+        }
+        // ext2/3/4 (сигнатура 0x53 0xEF)
+        if (safeMemcmp(0x438, "\x53\xEF", 2)) {
+            // Проверяем версию ext (только если есть достаточно данных)
+            if (bytesRead >= 0x458 + 4) {
+                quint32 sRevLevel = *reinterpret_cast<quint32*>(buffer + 0x458);
+                if (sRevLevel == 0 || sRevLevel == 1) return "ext2/3";
+                if (sRevLevel == 2) return "ext4";
+            }
+            return "ext";
+        }
+        // exFAT
+        if (safeMemcmp(0x03, "EXFAT", 5)) {
+            return "exFAT";
+        }
+        // HFS/HFS+
+        if (safeMemcmp(0x400, "BD", 2)) {
+            return "HFS/HFS+";
+        }
+        // ISO9660 (CD/DVD)
+        if (safeMemcmp(0x8001, "CD001", 5)) {
+            return "ISO9660";
+        }
+        // UDF
+        if (safeMemcmp(0x8001, "BEA01", 5)) {
+            return "UDF";
+        }
+
+        // Проверяем таблицу разделов
+        // MBR signature
+        if (safeMemcmp(0x1FE, "\x55\xAA", 2)) {
+            // Проверяем тип раздела (только если есть достаточно данных)
+            if (bytesRead >= 0x1C2 + 1) {
+                unsigned char partitionType = buffer[0x1C2];
+                switch (partitionType) {
+                    case 0x01: return "FAT12";
+                    case 0x04: case 0x06: case 0x0E: return "FAT16";
+                    case 0x0B: case 0x0C: return "FAT32";
+                    case 0x07: return "NTFS/exFAT/HPFS";
+                    case 0x83: return "Linux";
+                    case 0x82: return "Linux swap";
+                    case 0x8E: return "Linux LVM";
+                    case 0xAF: return "macOS HFS";
+                    case 0xEE: return "GPT protective";
+                    default: return "MBR partition";
+                }
+            }
+            return "MBR";
+        }
+
+        // GPT signature
+        if (safeMemcmp(0x200, "EFI PART", 8)) {
+            return "GPT partition";
+        }
+
+        // Проверяем, пустое ли устройство (все нули)
+        bool allZeros = true;
+        qint64 checkSize = qMin<qint64>(512, bytesRead);
+        for (int i = 0; i < checkSize; i++) {
+            if (buffer[i] != 0) {
+                allZeros = false;
+                break;
+            }
+        }
+
+        if (allZeros) {
+            return "empty";
+        }
+
+        return "unknown";
+    }
+
+    /// Проверка, является ли файл сжатым архивом
+    inline bool isCompressedArchive(const QString& filePath) {
+        QString type = detectFileType(filePath);
+        return type.contains("Compressed") || type.contains("Archive");
+    }
 
 } // namespace Utils
