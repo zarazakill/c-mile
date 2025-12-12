@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=C-mile
+Comment=Professional disk imaging utility for writing images to USB drives and SD cards
+Exec=c-mile
+Icon=c-mile
+Terminal=false
+Categories=Utility;System;
+Keywords=disk;imaging;usb;sdcard;iso;bootable;
+MimeType=application/x-iso9660-image;application/x-cd-image;application/x-raw-disk-image;

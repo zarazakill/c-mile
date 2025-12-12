@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 
 # Конфигурация
 PROJECT_NAME="c-mile"
-VERSION="0.7.4"
+VERSION="0.9.5"
 QT_VERSION="6"
 DESCRIPTION="Профессиональный инструмент для записи образов и форматирования устройств"
 MAINTAINER="$(whoami)@$(hostname)"
